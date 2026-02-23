@@ -137,7 +137,7 @@ function App() {
         const classIds = enrollments.map(e => e.classroom_id);
         const myClassrooms = enrollments.map(e => ({ ...e.classroom_master, classroom_id: e.classroom_id })).filter(Boolean);
 
-        const { data: submissions } = await supabase.from('exam_submissions').select('submission_id, exam_id, score, total_marks, submitted_at, exam_master(title)').eq('student_id', uid);
+        const { data: submissions } = await supabase.from('exam_submissions').select('submission_id, exam_id, score, total_marks, status, submitted_at, exam_master(title)').eq('student_id', uid);
         const takenExamIds = new Set(submissions?.map(s => s.exam_id) || []);
         
         const { data: deployments } = await supabase.from('exam_deployments')

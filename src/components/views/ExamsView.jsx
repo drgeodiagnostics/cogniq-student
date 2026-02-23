@@ -98,13 +98,25 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                                     {e.exam_master?.title || 'Exam'}
                                 </h4>
                                 <span className="text-xs text-slate-500 mt-1 block">
-                                    {new Date(e.submitted_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                                    Submitted: {new Date(e.submitted_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                                 </span>
                             </div>
                             
-                            <span className="font-mono font-bold bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 px-4 py-1.5 rounded-full border border-amber-100 dark:border-amber-800/50 text-xs shadow-sm uppercase tracking-wider">
-                                SUBMITTED • Pending Release
-                            </span>
+                            {/* 🚨 DYNAMIC STATUS RENDERING */}
+                            {e.status === 'published' ? (
+                                <div className="flex flex-col items-end">
+                                    <span className="text-2xl font-black text-green-600 dark:text-green-400">
+                                        {e.score} <span className="text-sm font-medium text-slate-400 dark:text-slate-500">/ {e.total_marks}</span>
+                                    </span>
+                                    <span className="text-[10px] font-bold text-green-700 dark:text-green-500 uppercase tracking-widest mt-0.5">
+                                        Published
+                                    </span>
+                                </div>
+                            ) : (
+                                <span className="font-mono font-bold bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 px-4 py-1.5 rounded-full border border-amber-100 dark:border-amber-800/50 text-xs shadow-sm uppercase tracking-wider">
+                                    Pending Release
+                                </span>
+                            )}
                         </div>
                     ))
                 )}
