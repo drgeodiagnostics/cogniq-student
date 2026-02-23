@@ -1,0 +1,55 @@
+/* --- 1. TAILWIND INITIALIZATION (CRITICAL) --- */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- 2. SECURITY: Disable Select & Copy --- */
+* {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* --- 3. EXCEPTION: Allow typing in inputs --- */
+input, textarea {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* --- 4. LAYOUT: Handle the iPhone Notch (Safe Area) --- */
+body {
+  margin: 0;
+  padding: 0;
+  /* Push content below the notch */
+  padding-top: env(safe-area-inset-top); 
+  padding-bottom: env(safe-area-inset-bottom);
+  /* Light Gray Medical Background */
+  background-color: #f2f2f7; 
+  min-height: 100vh;
+  /* System Font Stack */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- 5. RESET: Remove default margins --- */
+h1, h2, h3, h4, h5, h6, p {
+  margin: 0;
+}
+
+/* --- 6. ATLAS ENGINE: 3D Flashcard Animations --- */
+.perspective-1000 { 
+  perspective: 1000px; 
+}
+
+.transform-style-3d { 
+  transform-style: preserve-3d; 
+}
+
+.backface-hidden { 
+  backface-visibility: hidden; 
+}
+
+.rotate-y-180 { 
+  transform: rotateY(180deg); 
+}

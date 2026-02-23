@@ -1,0 +1,17 @@
+{
+  "appId": "com.drgeodiagnostics.student",
+  "appName": "CognIQ Student",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "PrivacyScreen": {
+      "enable": true,
+      "imageName": "Splash",
+      "contentMode": "scaleAspectFit",
+      "preventScreenshots": true,
+      "enableScreenshotDetection": true
+    }
+  }
+}
