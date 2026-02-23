@@ -71,7 +71,7 @@ function App() {
     setLoading(true);
     const { data: userProfile, error } = await supabase
         .from('user_master')
-        .select('*, org_master(status, name, tier)') // Added tier for Role-Based Access
+        .select('*, org_master(status, name, subscription_tier)') // Added tier for Role-Based Access
         .eq('user_id', userId)
         .single();
     
@@ -216,7 +216,7 @@ function App() {
   
   // --- TIER MANAGEMENT ---
   const hasAccess = (requiredTier) => {
-      const currentTier = profile?.org_master?.tier || 'free';
+      const currentTier = profile?.org_master?.subscription_tier || 'free';
       const tiers = { 'free': 1, 'standard': 2, 'enterprise': 3 };
       return tiers[currentTier] >= tiers[requiredTier];
   };
