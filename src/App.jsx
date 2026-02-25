@@ -22,6 +22,9 @@ import ProfileView from './components/views/ProfileView';
 // ⚠️ TEMPORARY OVERRIDE: Web Mode Active
 const STRICT_DEVICE_MODE = false; 
 
+// 📱 PWA DETECTION ENGINE
+const isPWA = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+
 function App() {
   // --- STATE MANAGEMENT ---
   const [session, setSession] = useState(null);
@@ -57,9 +60,14 @@ function App() {
         if (session) initializeUser(session.user.id); else setLoading(false);
     });
     
-    // 🛡️ iOS Security Shield
+    // 🛡️ iOS Security Shield (PWA & Native)
     const setupMobileSecurity = async () => {
-      try { await PrivacyScreen.enable(); } catch (e) { if(STRICT_DEVICE_MODE) console.warn("Native Security Plugin not active."); }
+      try { 
+        await PrivacyScreen.enable(); 
+        if(isPWA) console.log("Enterprise PWA Mode Active: Focus tracking engaged.");
+      } catch (e) { 
+        if(STRICT_DEVICE_MODE) console.warn("Native Security Plugin not active."); 
+      }
     };
     setupMobileSecurity();
 
@@ -71,7 +79,7 @@ function App() {
     setLoading(true);
     const { data: userProfile, error } = await supabase
         .from('user_master')
-        .select('*, org_master(status, name, subscription_tier)') // Added tier for Role-Based Access
+        .select('*, org_master(status, name, subscription_tier)') 
         .eq('user_id', userId)
         .single();
     
@@ -137,11 +145,54 @@ function App() {
         const classIds = enrollments.map(e => e.classroom_id);
         const myClassrooms = enrollments.map(e => ({ ...e.classroom_master, classroom_id: e.classroom_id })).filter(Boolean);
 
-        const { data: submissions } = await supabase
+        // 🚀 THE FIX: Pulling 'answers' AND the encrypted 'question_bank'
+        const { data: rawSubmissions } = await supabase
             .from('exam_submissions')
-            .select('submission_id, exam_id, score, total_marks, status, submitted_at, exam_master(title, classroom_master(name))') 
+            .select('submission_id, exam_id, score, total_marks, status, submitted_at, answers, exam_master(title, classroom_master(name), questions:question_bank(*))') 
             .eq('student_id', uid);
-        const takenExamIds = new Set(submissions?.map(s => s.exam_id) || []);
+        
+        // 🛡️ SQB DECRYPTION ENGINE: Optimized for 'explanations' JSONB column
+const decryptedSubmissions = rawSubmissions?.map(sub => {
+    if (sub.exam_master?.questions) {
+        sub.exam_master.questions = sub.exam_master.questions.map(q => {
+            // 1. Decrypt Options (Standard)
+            let parsedOptions = q.options;
+            if (q.options?.cipher) {
+                try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } 
+                catch (e) { console.error("Decryption failed for Options", q.question_id); }
+            }
+
+            // 2. 🚀 THE JSONB EXPLANATIONS FIX
+            let finalRationale = null;
+            
+            // Check if the 'explanations' JSON object exists
+            if (q.explanations) {
+                // If it follows the SQB pattern { cipher: "..." }
+                if (q.explanations.cipher) {
+                    try {
+                        finalRationale = decryptAES256(q.explanations.cipher);
+                    } catch (e) {
+                        console.error("Decryption failed for Explanations", q.question_id);
+                    }
+                } 
+                // Fallback: If it's just a JSON object with a 'text' key or similar
+                else {
+                    finalRationale = q.explanations.text || q.explanations.rationale || JSON.stringify(q.explanations);
+                }
+            }
+
+            return { 
+                ...q, 
+                question_text: decryptAES256(q.question_text), 
+                options: parsedOptions,
+                rationale: finalRationale // We map it back to 'rationale' so the UI can stay the same
+            };
+        });
+    }
+    return sub;
+});
+        
+        const takenExamIds = new Set(decryptedSubmissions?.map(s => s.exam_id) || []);
         
         const { data: deployments } = await supabase.from('exam_deployments')
             .select(`deployment_id, scheduled_at, duration_minutes, status, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
@@ -158,7 +209,7 @@ function App() {
         setDashboardData({
             myClassrooms,
             availableExams,
-            pastExams: submissions || [],
+            pastExams: decryptedSubmissions || [],
             announcements: announcements || [],
             myMentor: mentorData?.user || null
         });
@@ -229,15 +280,24 @@ function App() {
   if (loading || !profile) return <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div></div>;
   if (deviceStatus !== 'approved') return <DeviceGuard status={deviceStatus} sessionUser={session.user} onRefresh={() => checkDeviceStatus(session.user.id)} strictMode={STRICT_DEVICE_MODE} />;
 
+  // 🛡️ ACTIVE PROCTORING MODE
   if (view === 'taking_exam') {
     return <ActiveExamInterface 
         exam={currentExam} 
         questions={examQuestions} 
         studentId={session.user.id} 
+        isPWA={isPWA} // Pass PWA status to toggle native behaviors
         onComplete={(score, total, answers) => { 
-            supabase.from('exam_submissions').insert([{ exam_id: currentExam.exam_id, student_id: session.user.id, score, total_marks: total, answers }]).then(() => {
+            supabase.from('exam_submissions').insert([{ 
+                exam_id: currentExam.exam_id, 
+                student_id: session.user.id, 
+                score, 
+                total_marks: total, 
+                answers,
+                status: 'pending' // Default status for new submissions
+            }]).then(() => {
                 setCurrentExam(null); setExamQuestions([]); // PURGE MEMORY
-                alert("Submission Successful! Scores will be released by faculty.");
+                alert("Submission Successful! Your results are being processed.");
                 fetchDashboardData(); setView('dashboard'); 
             });
         }} 
@@ -282,7 +342,7 @@ const PremiumLockedScreen = ({ feature }) => (
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </div>
         <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-2">Upgrade Required</h2>
-        <p className="text-slate-500">The <b>{feature}</b> module is an advanced feature not currently included in your institution's subscription plan.</p>
+        <p className="text-slate-500 text-sm">The <b>{feature}</b> module is currently locked for your institution. Contact your administrator to upgrade your campus license.</p>
     </div>
 );
 

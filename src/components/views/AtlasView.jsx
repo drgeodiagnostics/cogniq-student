@@ -10,37 +10,71 @@ const AtlasView = () => {
     const [loading, setLoading] = useState(true);
     const [flippedCards, setFlippedCards] = useState({});
     
-    // Accordion State
-    const [collapsedChapters, setCollapsedChapters] = useState({});
+    const [expandedChapters, setExpandedChapters] = useState({});
 
-    // --- DATA FETCHING ---
+    // --- 🚀 INFINITE PAGINATION FETCH ENGINE ---
     useEffect(() => {
         const fetchAtlasData = async () => {
             setLoading(true);
             try {
-                const [cardsRes, mapsRes] = await Promise.all([
-                    supabase.from('atlas_flashcards').select('*').eq('is_published', true),
-                    supabase.from('atlas_mindmaps').select('*').eq('is_published', true)
-                ]);
+                // 1. Paginated Fetch for Flashcards
+                let allCards = [];
+                let start = 0;
+                const step = 1000;
                 
-                if (cardsRes.data) setFlashcards(cardsRes.data);
-                if (mapsRes.data) setMindmaps(mapsRes.data);
+                while (true) {
+                    const { data, error } = await supabase
+                        .from('atlas_flashcards')
+                        .select('*')
+                        .eq('is_published', true)
+                        .range(start, start + step - 1);
+                    
+                    if (error) throw error;
+                    if (!data || data.length === 0) break;
+                    
+                    allCards = [...allCards, ...data];
+                    if (data.length < step) break; // End of data
+                    start += step; // Fetch next batch
+                }
+
+                // 2. Paginated Fetch for Mind Maps
+                let allMaps = [];
+                let mStart = 0;
+                
+                while (true) {
+                    const { data, error } = await supabase
+                        .from('atlas_mindmaps')
+                        .select('*')
+                        .eq('is_published', true)
+                        .range(mStart, mStart + step - 1);
+                    
+                    if (error) throw error;
+                    if (!data || data.length === 0) break;
+                    
+                    allMaps = [...allMaps, ...data];
+                    if (data.length < step) break;
+                    mStart += step;
+                }
+
+                setFlashcards(allCards);
+                setMindmaps(allMaps);
+
             } catch (error) {
-                console.error("Atlas Error:", error);
+                console.error("Atlas Data Fetch Error:", error);
             } finally {
                 setLoading(false);
             }
         };
+
         fetchAtlasData();
     }, []);
 
-    // --- ACTIONS ---
     const toggleFlip = (id) => {
         setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }));
     };
 
     const toggleFolder = (chapter) => {
-        setCollapsedChapters(prev => ({ ...prev, [chapter]: !prev[chapter] }));
+        setExpandedChapters(prev => ({ ...prev, [chapter]: !prev[chapter] }));
     };
 
     // --- THE GROUPING ENGINE ---
@@ -58,7 +92,6 @@ const AtlasView = () => {
         return acc;
     }, {});
 
-    // --- RENDER ---
     return (
         <div className="space-y-6 pb-20 animate-in fade-in">
             {/* Header Section */}
@@ -111,14 +144,17 @@ const AtlasView = () => {
                                 <span className="italic font-medium">No flashcards published yet.</span>
                             </div>
                         ) : (
-                            Object.entries(groupedFlashcards).map(([chapterName, cards]) => (
-                                <div key={chapterName} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800">
+                            // 🚀 FIXED: Natural Numerical Sorting injected here
+                            Object.entries(groupedFlashcards)
+                                .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
+                                .map(([chapterName, cards]) => (
+                                <div key={chapterName} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 transition-all hover:border-indigo-300 dark:hover:border-indigo-700">
                                     <h3 
                                         onClick={() => toggleFolder(chapterName)}
                                         className="font-bold text-xl text-slate-800 dark:text-white flex items-center gap-3 cursor-pointer select-none hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group"
                                     >
                                         <div className="p-1.5 bg-slate-100 dark:bg-slate-800 rounded-md group-hover:bg-indigo-50 dark:group-hover:bg-indigo-900/30 transition-colors">
-                                            {!collapsedChapters[chapterName] ? <ChevronDown size={20} className="text-slate-500" /> : <ChevronRight size={20} className="text-slate-500" />}
+                                            {expandedChapters[chapterName] ? <ChevronDown size={20} className="text-slate-500" /> : <ChevronRight size={20} className="text-slate-500" />}
                                         </div>
                                         <Folder size={24} className="text-indigo-500" /> 
                                         {chapterName}
@@ -127,7 +163,7 @@ const AtlasView = () => {
                                         </span>
                                     </h3>
                                     
-                                    {!collapsedChapters[chapterName] && (
+                                    {expandedChapters[chapterName] && (
                                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
                                             {cards.map(card => (
                                                 <div key={card.id} onClick={() => toggleFlip(card.id)} className="cursor-pointer group perspective-1000 h-64 w-full">
@@ -168,20 +204,23 @@ const AtlasView = () => {
                                 <span className="italic font-medium">No mind maps published yet.</span>
                             </div>
                         ) : (
-                            Object.entries(groupedMindmaps).map(([chapterName, maps]) => (
-                                <div key={chapterName} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800">
+                            // 🚀 FIXED: Natural Numerical Sorting injected here
+                            Object.entries(groupedMindmaps)
+                                .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
+                                .map(([chapterName, maps]) => (
+                                <div key={chapterName} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 transition-all hover:border-indigo-300 dark:hover:border-indigo-700">
                                     <h3 
                                         onClick={() => toggleFolder(chapterName)}
                                         className="font-bold text-xl text-slate-800 dark:text-white flex items-center gap-3 cursor-pointer select-none hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group"
                                     >
                                         <div className="p-1.5 bg-slate-100 dark:bg-slate-800 rounded-md group-hover:bg-indigo-50 dark:group-hover:bg-indigo-900/30 transition-colors">
-                                            {!collapsedChapters[chapterName] ? <ChevronDown size={20} className="text-slate-500" /> : <ChevronRight size={20} className="text-slate-500" />}
+                                            {expandedChapters[chapterName] ? <ChevronDown size={20} className="text-slate-500" /> : <ChevronRight size={20} className="text-slate-500" />}
                                         </div>
                                         <Folder size={24} className="text-indigo-500" /> 
                                         {chapterName}
                                     </h3>
                                     
-                                    {!collapsedChapters[chapterName] && (
+                                    {expandedChapters[chapterName] && (
                                         <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
                                             {maps.map(map => (
                                                 <div key={map.id} className="bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
