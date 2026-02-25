@@ -30,12 +30,10 @@ function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   
-  // App State
   const [profile, setProfile] = useState(null);
   const [deviceStatus, setDeviceStatus] = useState('checking');
   const [view, setView] = useState('dashboard');
   
-  // Shared Data State
   const [dashboardData, setDashboardData] = useState({
       myClassrooms: [], 
       announcements: [], 
@@ -44,7 +42,6 @@ function App() {
       pastExams: []
   });
   
-  // Exam Engine State
   const [currentExam, setCurrentExam] = useState(null);
   const [examQuestions, setExamQuestions] = useState([]);
 
@@ -60,11 +57,9 @@ function App() {
         if (session) initializeUser(session.user.id); else setLoading(false);
     });
     
-    // 🛡️ iOS Security Shield (PWA & Native)
     const setupMobileSecurity = async () => {
       try { 
         await PrivacyScreen.enable(); 
-        if(isPWA) console.log("Enterprise PWA Mode Active: Focus tracking engaged.");
       } catch (e) { 
         if(STRICT_DEVICE_MODE) console.warn("Native Security Plugin not active."); 
       }
@@ -131,9 +126,9 @@ function App() {
     setLoading(false); 
   };
 
-  const fetchDashboardData = async (uid = session?.user?.id) => { 
+  const fetchDashboardData = async (uid = session?.user?.id, silent = false) => { 
     if(!uid) return;
-    setLoading(true);
+    if (!silent) setLoading(true); // 👈 Only show full screen loader if not silent
     
     try {
         const { data: enrollments } = await supabase.from('classroom_enrollments').select('classroom_id, classroom_master(name, org_id)').eq('student_id', uid);
@@ -150,41 +145,36 @@ function App() {
             .select('submission_id, exam_id, score, total_marks, status, submitted_at, answers, exam_master(title, classroom_master(name), questions:question_bank(*))') 
             .eq('student_id', uid);
         
-        // Separate In-Progress exams from Completed exams
-        const completedSubmissions = rawSubmissions?.filter(sub => sub.status !== 'in_progress') || [];
-        
         // 🛡️ SQB DECRYPTION ENGINE
-        const decryptedSubmissions = completedSubmissions.map(sub => {
+        const decryptedSubmissions = (rawSubmissions || []).map(sub => {
             if (sub.exam_master?.questions) {
                 sub.exam_master.questions = sub.exam_master.questions.map(q => {
                     let parsedOptions = q.options;
                     if (q.options?.cipher) {
-                        try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } 
-                        catch (e) { console.error("Decryption failed", q.question_id); }
+                        try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch (e) { }
                     }
 
                     let finalRationale = null;
-                    if (q.explanations) {
-                        if (q.explanations.cipher) {
-                            try { finalRationale = decryptAES256(q.explanations.cipher); } catch (e) { }
-                        } else {
-                            finalRationale = q.explanations.text || q.explanations.rationale || JSON.stringify(q.explanations);
-                        }
+                    if (q.explanations?.cipher) {
+                        try { finalRationale = JSON.parse(decryptAES256(q.explanations.cipher)); } catch (e) { }
                     }
+
+                    let plainAnswer = q.correct_answer;
+                    try { plainAnswer = decryptAES256(q.correct_answer); } catch(e) {}
 
                     return { 
                         ...q, 
                         question_text: decryptAES256(q.question_text), 
                         options: parsedOptions,
-                        rationale: finalRationale 
+                        rationale: finalRationale,
+                        correct_answer: plainAnswer
                     };
                 });
             }
             return sub;
         });
         
-        // Only block exams that are fully completed
-        const takenExamIds = new Set(completedSubmissions.map(s => s.exam_id));
+        const completedExamIds = new Set(decryptedSubmissions.filter(s => s.status === 'published' || s.status === 'pending').map(s => s.exam_id));
         
         const { data: deployments } = await supabase.from('exam_deployments')
             .select(`deployment_id, scheduled_at, duration_minutes, status, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
@@ -192,7 +182,7 @@ function App() {
             .in('status', ['scheduled', 'live', 'LIVE', 'DEPLOYED', 'deployed']) 
             .order('scheduled_at', { ascending: true });
         
-        const availableExams = (deployments || []).filter(d => d.exam && !takenExamIds.has(d.exam.exam_id));
+        const availableExams = (deployments || []).filter(d => d.exam && !completedExamIds.has(d.exam.exam_id));
 
         const { data: announcements } = await supabase.from('announcements').select('*, user_master(full_name)').in('classroom_id', classIds).order('created_at', { ascending: false }).limit(10);
         const { data: mentorData } = await supabase.from('mentorship_assignments').select('mentor_id, user:mentor_id(full_name, email)').eq('mentee_id', uid).maybeSingle();
@@ -208,7 +198,7 @@ function App() {
     } catch (err) {
         console.error("Dashboard Load Error:", err);
     } finally {
-        setLoading(false);
+       setLoading(false);
     }
   };
 
@@ -223,36 +213,17 @@ function App() {
             .eq('org_id', profile.org_id); 
 
           if (error) throw new Error("RLS Block: " + error.message);
-          if (!qData || qData.length === 0) throw new Error("Exam content not found.");
-
-          // SQB PROTOCOL: JUST-IN-TIME (JIT) DECRYPTION
-          const decryptedQuestions = qData.map(q => {
-              let parsedOptions = q.options;
-              if (q.options?.cipher) {
-                  try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } 
-                  catch (e) { console.error("Decryption failed for QID", q.question_id); }
-              }
-              return { ...q, question_text: decryptAES256(q.question_text), options: parsedOptions };
-          });
-
-          // 🚀 THE FIX: Inject the specific deployment duration into the currentExam object
+          
+          // Note: Decryption now happens inside ActiveExamInterface for maximum security
           setCurrentExam({ 
               ...deployment.exam, 
               deployment_id: deployment.deployment_id,
-              duration_minutes: deployment.duration_minutes // <-- Ensures the timer starts correctly!
+              duration_minutes: deployment.duration_minutes
           }); 
           
-          setExamQuestions(decryptedQuestions); 
+          setExamQuestions(qData || []); 
           setView('taking_exam'); 
           
-          await supabase.from('proctoring_logs').insert([{ 
-              deployment_id: deployment.deployment_id, 
-              student_id: session.user.id, 
-              incident_type: 'exam_start', 
-              description: 'Student started the exam session.', 
-              severity: 'low' 
-          }]);
-
       } catch (err) {
           alert("Architecture Fault: " + err.message);
       } finally {
@@ -260,18 +231,14 @@ function App() {
       }
   };
 
-  // --- ENTERPRISE PASSWORD HANDLER ---
   const handleUpdatePassword = async (newPassword) => {
       const { error: authError } = await supabase.auth.updateUser({ password: newPassword });
       if (authError) throw authError;
-
       const { error: profileError } = await supabase.from('user_master').update({ is_initial_password: false }).eq('user_id', session.user.id);
       if (profileError) throw profileError;
-
       setProfile(prev => ({ ...prev, is_initial_password: false }));
   };
   
-  // --- TIER MANAGEMENT ---
   const hasAccess = (requiredTier) => {
       const currentTier = profile?.org_master?.subscription_tier || 'free';
       const tiers = { 'free': 1, 'standard': 2, 'enterprise': 3 };
@@ -280,10 +247,9 @@ function App() {
 
   // --- RENDER PIPELINE ---
   if (!session) return <LoginScreen />;
-  if (loading || !profile) return <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div></div>;
+  if (loading || !profile) return <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
   if (deviceStatus !== 'approved') return <DeviceGuard status={deviceStatus} sessionUser={session.user} onRefresh={() => checkDeviceStatus(session.user.id)} strictMode={STRICT_DEVICE_MODE} />;
 
-  // 🛡️ ACTIVE PROCTORING MODE
   if (view === 'taking_exam') {
     return <ActiveExamInterface 
         exam={currentExam} 
@@ -294,14 +260,14 @@ function App() {
             supabase.from('exam_submissions').update({ 
                 score, 
                 total_marks: total, 
-                status: 'pending', // 🔒 Locks the review until faculty changes it
+                status: 'pending', 
                 answers
             })
             .eq('exam_id', currentExam.exam_id)
             .eq('student_id', session.user.id)
             .then(() => {
-                setCurrentExam(null); setExamQuestions([]); // PURGE MEMORY
-                alert("Submission Successful! Your results are pending faculty release.");
+                setCurrentExam(null); setExamQuestions([]);
+                alert("Submission Successful! Results pending release.");
                 fetchDashboardData(); setView('dashboard'); 
             });
         }} 
@@ -323,30 +289,35 @@ function App() {
         currentView={view}
         onUpdatePassword={handleUpdatePassword}
     >
-       {/* BASE TIER FEATURES */}
        {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData()} />}
-       {view === 'exams' && <ExamsView availableExams={dashboardData.availableExams} pastExams={dashboardData.pastExams} onStart={startExam} />}
+       {/* 🚀 THE FIX: Passing studentId here enables the "Continue Exam" logic */}
+       {view === 'exams' && (
+  <ExamsView 
+    availableExams={dashboardData.availableExams} 
+    pastExams={dashboardData.pastExams} 
+    onStart={startExam} 
+    studentId={session.user.id} 
+    onRefresh={() => fetchDashboardData(session.user.id, true)} // 👈 Add this
+  />
+)}
        {view === 'profile' && <ProfileView profile={profile} onUpdatePassword={handleUpdatePassword} />}
        
-       {/* STANDARD TIER FEATURES */}
        {view === 'atlas' && hasAccess('standard') && <AtlasView />}
        {view === 'atlas' && !hasAccess('standard') && <PremiumLockedScreen feature="Study Atlas" />}
        
-       {/* ENTERPRISE TIER FEATURES */}
        {view === 'mentorship' && hasAccess('enterprise') && <MentorshipView mentor={dashboardData.myMentor} />}
        {view === 'mentorship' && !hasAccess('enterprise') && <PremiumLockedScreen feature="Mentorship" />}
     </StudentDashboardLayout>
   );
 }
 
-// 🔒 FALLBACK UI FOR LOCKED TIERS
 const PremiumLockedScreen = ({ feature }) => (
-    <div className="p-12 mt-10 max-w-lg mx-auto text-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm animate-in fade-in zoom-in-95">
+    <div className="p-12 mt-10 max-w-lg mx-auto text-center bg-white dark:bg-slate-900 rounded-[24px] border border-slate-200 dark:border-slate-800 shadow-sm animate-in fade-in zoom-in-95">
         <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/30 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </div>
-        <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-2">Upgrade Required</h2>
-        <p className="text-slate-500 text-sm">The <b>{feature}</b> module is currently locked for your institution. Contact your administrator to upgrade your campus license.</p>
+        <h2 className="text-2xl font-black text-slate-800 dark:text-white mb-2 uppercase tracking-tight">Upgrade Required</h2>
+        <p className="text-slate-500 text-sm font-medium leading-relaxed">The <b>{feature}</b> module is currently locked for your institution. Contact your administrator to upgrade your campus license.</p>
     </div>
 );
 

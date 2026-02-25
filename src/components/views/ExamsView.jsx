@@ -1,20 +1,35 @@
 import React, { useState } from 'react';
 import { 
     Users, History, ChevronDown, ChevronRight, 
-    CheckCircle, XCircle, FileSearch, X, Info, Clock 
+    CheckCircle, XCircle, FileSearch, X, Info, Clock, ShieldCheck, RefreshCw
 } from 'lucide-react';
+// 🛡️ IMPORT DECRYPTION PROTOCOL
+import { decryptAES256 } from '../../utils/security/sqbProtocol';
 
-const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
+const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, onRefresh }) => {
     const now = new Date();
 
     const [collapsedActive, setCollapsedActive] = useState({});
     const [collapsedPast, setCollapsedPast] = useState({});
-    
-    // Tracks which exam is currently being reviewed
     const [reviewExam, setReviewExam] = useState(null);
+    const [isSyncing, setIsSyncing] = useState(false); // 🚀 NEW: Sync state
 
     const toggleActive = (className) => setCollapsedActive(prev => ({ ...prev, [className]: !prev[className] }));
     const togglePast = (className) => setCollapsedPast(prev => ({ ...prev, [className]: !prev[className] }));
+
+    // --- 🚀 NEW: MANUAL SYNC HANDLER ---
+    const handleManualSync = async () => {
+        if (isSyncing) return;
+        setIsSyncing(true);
+        
+        // Triggers the parent's fetch function (passed via props)
+        if (onRefresh) {
+            await onRefresh();
+        }
+        
+        // Premium feel delay
+        setTimeout(() => setIsSyncing(false), 800);
+    };
 
     // --- 🧩 THE GROUPING ENGINE ---
     const groupedAvailable = availableExams.reduce((acc, d) => {
@@ -24,29 +39,71 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
         return acc;
     }, {});
 
-    const groupedPast = pastExams.reduce((acc, e) => {
+    const completedPastExams = pastExams.filter(e => e.status !== 'in_progress');
+
+    const groupedPast = completedPastExams.reduce((acc, e) => {
         const cName = e.exam_master?.classroom_master?.name || 'Recent Results';
         if (!acc[cName]) acc[cName] = [];
         acc[cName].push(e);
         return acc;
     }, {});
 
+    const handleOpenReview = (examData) => {
+        const decryptedExam = JSON.parse(JSON.stringify(examData));
+        decryptedExam.exam_master.questions = decryptedExam.exam_master.questions.map(q => {
+            let plainText = q.question_text;
+            try { plainText = decryptAES256(q.question_text); } catch (e) {}
+            let plainAnswer = q.correct_answer;
+            try { plainAnswer = decryptAES256(q.correct_answer); } catch (e) {}
+            let plainOptions = q.options;
+            if (q.options?.cipher) {
+                try { plainOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch (e) {}
+            }
+            let plainExplanations = q.explanations || q.rationale; 
+            if (q.explanations?.cipher) {
+                try { plainExplanations = JSON.parse(decryptAES256(q.explanations.cipher)); } catch (e) {}
+            }
+            return { 
+                ...q, 
+                question_text: plainText, 
+                correct_answer: plainAnswer, 
+                options: plainOptions,
+                rationale: plainExplanations 
+            };
+        });
+        setReviewExam(decryptedExam);
+    };
+
     return (
         <div className="space-y-8 pb-20 animate-in fade-in">
             {/* Header Section */}
-            <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
+            <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-6 rounded-[24px] shadow-sm border border-slate-200 dark:border-slate-800">
                 <div>
-                    <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Assessments</h1>
-                    <p className="text-sm text-slate-500 mt-1">Manage your active exams and review past performance.</p>
+                    <h1 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tight">Assessments</h1>
+                    <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">Manage your active exams and review past performance.</p>
                 </div>
+                {/* 🚀 NEW: SYNC BUTTON */}
+                <button 
+                    onClick={handleManualSync}
+                    disabled={isSyncing}
+                    className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border shadow-sm active:scale-95 ${
+                        isSyncing 
+                        ? 'bg-indigo-50 text-indigo-600 border-indigo-200 dark:bg-indigo-900/30 dark:border-indigo-800 animate-pulse' 
+                        : 'bg-white dark:bg-slate-900 text-slate-600 border-slate-200 dark:border-slate-800 hover:border-indigo-400 hover:text-indigo-600'
+                    }`}
+                >
+                    <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
+                    {isSyncing ? "Updating..." : "Sync Status"}
+                </button>
             </div>
 
             {/* --- ACTIVE & UPCOMING EXAMS --- */}
             <div>
-                <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-6">Active & Upcoming</h2>
+                <h2 className="text-lg font-black text-slate-800 dark:text-white mb-6 uppercase tracking-tight">Active & Upcoming</h2>
                 {Object.keys(groupedAvailable).length === 0 ? (
-                    <div className="p-8 text-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-800">
-                        <span className="italic">No active exams found for your enrolled classes.</span>
+                    <div className="p-10 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-[24px] border border-dashed border-slate-200 dark:border-slate-800 shadow-sm">
+                        <span className="text-xs font-bold uppercase tracking-widest block mb-2">No active exams found.</span>
+                        <button onClick={handleManualSync} className="text-indigo-500 font-black text-[10px] uppercase hover:underline">Click to Refresh</button>
                     </div>
                 ) : (
                     <div className="space-y-8">
@@ -56,19 +113,19 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                             <div key={className} className="space-y-4">
                                 <button 
                                     onClick={() => toggleActive(className)}
-                                    className="w-full flex items-center justify-between font-bold text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 pb-2 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group"
+                                    className="w-full flex items-center justify-between font-black text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 pb-3 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group uppercase tracking-tight"
                                 >
-                                    <div className="flex items-center gap-2">
-                                        <div className="p-1.5 bg-blue-50 dark:bg-blue-900/30 rounded-lg text-blue-600 dark:text-blue-400 group-hover:bg-indigo-100 transition-colors">
-                                            <Users size={16} />
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-xl text-indigo-600 dark:text-indigo-400 group-hover:bg-indigo-100 transition-colors">
+                                            <Users size={18} />
                                         </div>
                                         {className}
-                                        <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-full ml-2">
+                                        <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md ml-2">
                                             {exams.length}
                                         </span>
                                     </div>
                                     <div className="text-slate-400 group-hover:text-indigo-500 transition-colors">
-                                        {collapsedActive[className] ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                                        {collapsedActive[className] ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
                                     </div>
                                 </button>
 
@@ -76,25 +133,50 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                                     <div className="space-y-4 animate-in slide-in-from-top-2">
                                         {exams.map(d => {
                                             const scheduledTime = new Date(d.scheduled_at);
-                                            const isLive = d.status.toLowerCase() === 'live' || now >= scheduledTime;
+                                            const isLive = d.status.toLowerCase() === 'live' || d.status.toLowerCase() === 'active' || now >= scheduledTime;
+
+                                            const cloudStarted = pastExams.some(sub => sub.exam_id === d.exam_id && sub.status === 'in_progress');
+                                            const localBufferKey = `exam_offline_buffer_${d.deployment_id}_${studentId}`;
+                                            const localStarted = !!localStorage.getItem(localBufferKey);
+
+                                            const isStarted = cloudStarted || localStarted;
 
                                             return (
                                                 <div 
                                                     key={d.deployment_id} 
-                                                    className={`p-6 bg-white dark:bg-slate-900 rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm gap-4 transition-all ml-2 md:ml-6 ${
-                                                        isLive ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md transform hover:-translate-y-1' : 'border border-slate-200 dark:border-slate-800 opacity-80'
+                                                    className={`p-6 md:p-8 bg-white dark:bg-slate-900 rounded-[24px] flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm gap-6 transition-all group ${
+                                                        isLive ? 'border border-indigo-200 dark:border-indigo-900/50 hover:border-indigo-400 dark:hover:border-indigo-500' : 'border border-slate-200 dark:border-slate-800 opacity-80'
                                                     }`}
                                                 >
-                                                    <div>
-                                                        <h3 className="font-bold text-xl text-slate-800 dark:text-white">{d.exam?.title || 'Secure Assessment'}</h3>
-                                                        <p className="text-sm text-slate-500 font-mono mt-1">{d.duration_minutes} mins • Opens: {scheduledTime.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</p>
+                                                    <div className="flex-1">
+                                                        <div className="flex items-center gap-2 mb-2">
+                                                            <h3 className="font-black text-xl text-slate-800 dark:text-white leading-tight">{d.exam?.title || 'Secure Assessment'}</h3>
+                                                            {isLive && <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]" />}
+                                                        </div>
+                                                        <div className="flex flex-wrap items-center gap-3 mt-3">
+                                                            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest flex items-center gap-1">
+                                                                <Clock size={12}/> {d.duration_minutes} mins
+                                                            </span>
+                                                            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest">
+                                                                Opens: {scheduledTime.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                                                            </span>
+                                                            <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest flex items-center gap-1 border border-green-200 dark:border-green-800/50">
+                                                                <ShieldCheck size={12}/> AES-256
+                                                            </span>
+                                                        </div>
                                                     </div>
                                                     <button 
                                                         onClick={() => isLive && onStart(d)} 
                                                         disabled={!isLive}
-                                                        className={`px-8 py-3.5 rounded-xl font-bold transition-all ${isLive ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md active:scale-95' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                                                        className={`w-full md:w-auto px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition-all active:scale-95 shadow-lg ${
+                                                            !isLive 
+                                                                ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed shadow-none'
+                                                                : isStarted 
+                                                                    ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/20 ring-2 ring-amber-500 ring-offset-2 dark:ring-offset-slate-900' 
+                                                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                                                        }`}
                                                     >
-                                                        {isLive ? 'Start Secure Exam' : 'Scheduled'}
+                                                        {isLive ? (isStarted ? 'Continue Exam' : 'Start Exam') : 'Scheduled'}
                                                     </button>
                                                 </div>
                                             );
@@ -108,43 +190,46 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
             </div>
 
             {/* --- PAST RESULTS --- */}
-            <div className="pt-6">
-                <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-6 flex items-center gap-2">
-                    <History size={20} className="text-slate-400" /> Past Results
+            <div className="pt-8">
+                <h2 className="text-lg font-black text-slate-800 dark:text-white mb-6 uppercase tracking-tight flex items-center gap-2">
+                    <History size={20} className="text-indigo-500" /> Past Results
                 </h2>
-                <div className="space-y-8">
-                    {Object.entries(groupedPast).map(([className, exams]) => (
+                <div className="space-y-6">
+                    {Object.entries(groupedPast).length === 0 ? (
+                        <div className="p-8 text-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 rounded-[24px] border border-slate-200 dark:border-slate-800">
+                             <span className="text-[10px] font-black uppercase tracking-[0.2em]">No results recorded yet</span>
+                        </div>
+                    ) : Object.entries(groupedPast).map(([className, exams]) => (
                         <div key={className} className="space-y-3">
-                            <button onClick={() => togglePast(className)} className="w-full flex items-center justify-between text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest pl-2 mb-1 hover:text-indigo-600 transition-colors group">
+                            <button onClick={() => togglePast(className)} className="w-full flex items-center justify-between text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-2 hover:text-indigo-600 transition-colors group">
                                 <div className="flex items-center gap-2">
                                     <span>{className}</span>
-                                    <span className="text-[10px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full">{exams.length}</span>
+                                    <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">{exams.length}</span>
                                 </div>
                                 <div>{collapsedPast[className] ? <ChevronRight size={16} /> : <ChevronDown size={16} />}</div>
                             </button>
                             {!collapsedPast[className] && (
-                                <div className="space-y-3">
+                                <div className="space-y-4">
                                     {exams.map(e => (
-                                        <div key={e.submission_id} className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 transition-all hover:shadow-md ml-2 md:ml-6">
+                                        <div key={e.submission_id} className="p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[24px] flex flex-col md:flex-row justify-between items-start md:items-center gap-6 transition-all hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800/50">
                                             <div className="flex-1">
-                                                <h4 className="font-bold text-slate-700 dark:text-slate-200 text-lg">{e.exam_master?.title || 'Exam'}</h4>
-                                                <span className="text-xs text-slate-500">Submitted: {new Date(e.submitted_at).toLocaleDateString()}</span>
+                                                <h4 className="font-black text-slate-800 dark:text-slate-100 text-lg leading-tight">{e.exam_master?.title || 'Exam'}</h4>
+                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 block">Submitted: {new Date(e.submitted_at).toLocaleDateString()}</span>
                                             </div>
 
-                                            {/* 🚀 THE FIX: Check if status is 'published' before allowing Review */}
                                             {e.status === 'published' ? (
                                                 <div className="flex items-center gap-6 w-full md:w-auto shrink-0 justify-between md:justify-end">
                                                     <div className="text-right">
-                                                        <span className="text-2xl font-black text-green-600">{e.score} <span className="text-sm text-slate-400">/ {e.total_marks}</span></span>
-                                                        <span className="block text-[10px] font-bold text-green-700 uppercase tracking-widest">Published</span>
+                                                        <span className="text-2xl font-black text-green-600 dark:text-green-500 leading-none block">{e.score} <span className="text-sm text-slate-400">/ {e.total_marks}</span></span>
+                                                        <span className="text-[9px] font-black text-green-700 dark:text-green-400 uppercase tracking-widest block mt-1">Published</span>
                                                     </div>
-                                                    <button onClick={() => setReviewExam(e)} className="flex items-center gap-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 px-4 py-2 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-all">
-                                                        <FileSearch size={18} /> Review
+                                                    <button onClick={() => handleOpenReview(e)} className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400 px-5 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all">
+                                                        <FileSearch size={16} /> Review
                                                     </button>
                                                 </div>
                                             ) : (
                                                 <div className="flex items-center w-full md:w-auto shrink-0 justify-between md:justify-end">
-                                                    <span className="font-mono font-bold bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 px-4 py-2 rounded-xl border border-amber-100 dark:border-amber-800/50 text-xs shadow-sm uppercase tracking-wider flex items-center gap-2">
+                                                    <span className="font-black bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-5 py-3 rounded-xl border border-amber-200 dark:border-amber-800/50 text-[10px] uppercase tracking-widest flex items-center gap-2">
                                                         <Clock size={14} /> Pending Release
                                                     </span>
                                                 </div>
@@ -158,22 +243,20 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                 </div>
             </div>
 
-            {/* --- REVIEW MODAL --- */}
+            {/* --- REVIEW MODAL --- (Kept original logic) */}
             {reviewExam && (
-                <div className="fixed inset-0 bg-slate-50 dark:bg-slate-950 z-[100] flex flex-col animate-in fade-in zoom-in-95 duration-200">
-                    {/* Modal Toolbar */}
+                <div className="fixed inset-0 bg-slate-50 dark:bg-[#0b0f19] z-[100] flex flex-col animate-in fade-in zoom-in-95 duration-200">
                     <div className="h-20 px-6 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 shadow-sm z-10 shrink-0">
                         <div>
                             <h3 className="font-black text-slate-800 dark:text-white flex items-center gap-3 text-xl"><FileSearch className="text-indigo-500" size={24} /> Performance Review</h3>
                             <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{reviewExam.exam_master?.title}</p>
                         </div>
-                        <button onClick={() => setReviewExam(null)} className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-red-100 rounded-2xl transition-all"><X size={24} /></button>
+                        <button onClick={() => setReviewExam(null)} className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-2xl transition-all text-slate-500"><X size={24} /></button>
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-4 md:p-8">
                         <div className="max-w-4xl mx-auto space-y-6 pb-20">
-                            
-                            {/* 📊 PERFORMANCE SUMMARY CARDS */}
+                            {/* Summary Chips */}
                             <div className="grid grid-cols-3 gap-4 mb-8">
                                 {(() => {
                                     const total = reviewExam.exam_master.questions.length;
@@ -207,9 +290,9 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                                 try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch (e) { opts = []; }
 
                                 return (
-                                    <div key={q.question_id} className={`bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[32px] border-2 shadow-sm ${isSkipped ? 'border-slate-200 dark:border-slate-800' : isCorrect ? 'border-green-200' : 'border-red-200'}`}>
+                                    <div key={q.question_id} className={`bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[32px] border-2 shadow-sm ${isSkipped ? 'border-slate-200 dark:border-slate-800' : isCorrect ? 'border-green-200 dark:border-green-900/50' : 'border-red-200 dark:border-red-900/50'}`}>
                                         <div className="flex gap-4 mb-6">
-                                            <span className={`shrink-0 w-10 h-10 rounded-2xl flex items-center justify-center font-black text-lg ${isSkipped ? 'bg-slate-100 text-slate-500 dark:bg-slate-800' : isCorrect ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>{i + 1}</span>
+                                            <span className={`shrink-0 w-10 h-10 rounded-2xl flex items-center justify-center font-black text-lg ${isSkipped ? 'bg-slate-100 text-slate-500 dark:bg-slate-800' : isCorrect ? 'bg-green-100 text-green-600 dark:bg-green-900/50' : 'bg-red-100 text-red-600 dark:bg-red-900/50'}`}>{i + 1}</span>
                                             <div className="flex-1 pt-1.5">
                                                 <h3 className="font-bold text-lg md:text-xl text-slate-800 dark:text-white leading-relaxed">{q.question_text}</h3>
                                                 <div className="mt-2 flex items-center gap-2">
@@ -223,22 +306,23 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                                         <div className="space-y-3 md:pl-14 mb-8">
                                             {opts.map((opt, j) => {
                                                 const label = ['A','B','C','D','E'][j];
-                                                const isStudentChoice = studentAnswer === label;
-                                                const isTrueAnswer = q.correct_answer === label;
+                                                const isStudentChoice = studentAnswer === label || studentAnswer === opt;
+                                                const isTrueAnswer = q.correct_answer === label || q.correct_answer === opt;
+                                                
                                                 let style = isTrueAnswer ? "border-green-500 bg-green-50 dark:bg-green-900/20 ring-2 ring-green-500/20 opacity-100" 
                                                           : isStudentChoice ? "border-red-400 bg-red-50 dark:bg-red-900/20 opacity-100" 
                                                           : "border-slate-100 dark:border-slate-800 opacity-60";
+                                                
                                                 return (
                                                     <div key={j} className={`p-4 rounded-2xl border-2 flex items-start gap-3 transition-all ${style}`}>
                                                         <div className="shrink-0 w-6 mt-0.5">{isTrueAnswer ? <CheckCircle className="text-green-600" size={20} /> : isStudentChoice ? <XCircle className="text-red-500" size={20} /> : <div className="w-2 h-2 rounded-full bg-slate-300 mt-2" />}</div>
-                                                        <span className={`text-sm md:text-base font-medium ${isTrueAnswer ? 'text-green-900 dark:text-green-100 font-bold' : 'text-slate-500'}`}>{opt}</span>
-                                                        {isStudentChoice && <span className="ml-auto text-[10px] font-black uppercase text-slate-400 px-2 py-1 bg-white dark:bg-slate-900 rounded-md border border-slate-100">Your Answer</span>}
+                                                        <span className={`text-sm md:text-base font-medium ${isTrueAnswer ? 'text-green-900 dark:text-green-100 font-bold' : 'text-slate-500 dark:text-slate-400'}`}>{opt}</span>
+                                                        {isStudentChoice && <span className="ml-auto text-[10px] font-black uppercase text-slate-400 px-2 py-1 bg-white dark:bg-slate-900 rounded-md border border-slate-100 dark:border-slate-800">Your Answer</span>}
                                                     </div>
                                                 );
                                             })}
                                         </div>
 
-                                        {/* 🚀 FORMALIZED CLINICAL RATIONALE */}
                                         {q.rationale && (
                                             <div className="md:pl-14">
                                                 <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
