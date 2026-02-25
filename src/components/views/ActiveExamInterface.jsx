@@ -1,239 +1,300 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../../supabaseClient';
-import { CheckCircle, Clock, AlertTriangle, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { ChevronLeft, ChevronRight, Flag, CheckCircle, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { supabase } from '../../supabaseClient'; // Ensure this path matches your setup
 
-const ActiveExamInterface = ({ exam, questions, studentId, onComplete, isPWA }) => {
-    
-    // 🛡️ 1. DEFINE SECURE MEMORY KEYS
-    const draftKey = `exam_draft_${exam.deployment_id}_${studentId}`;
-    const timeKey = `exam_time_${exam.deployment_id}_${studentId}`;
+export default function ActiveExamInterface({ exam, questions, studentId, isPWA, onComplete }) {
+    // 🛡️ SECURE MEMORY KEYS
+    const draftKey = `exam_draft_${exam?.deployment_id}_${studentId}`;
+    const timeKey = `exam_time_${exam?.deployment_id}_${studentId}`;
+    const flagKey = `exam_flags_${exam?.deployment_id}_${studentId}`;
 
-    // 🛡️ 2. HYDRATE STATE FROM DEVICE MEMORY (Prevents loss on refresh)
+    // --- STATE (Hydrated from LocalStorage) ---
+    const [currentIdx, setCurrentIdx] = useState(0);
+    const [showConfirm, setShowConfirm] = useState(false);
+    const [isViolationAlert, setIsViolationAlert] = useState(false);
+
     const [answers, setAnswers] = useState(() => {
-        const savedDraft = localStorage.getItem(draftKey);
-        return savedDraft ? JSON.parse(savedDraft) : {};
+        const saved = localStorage.getItem(draftKey);
+        return saved ? JSON.parse(saved) : {};
+    });
+
+    const [flagged, setFlagged] = useState(() => {
+        const saved = localStorage.getItem(flagKey);
+        return saved ? new Set(JSON.parse(saved)) : new Set();
     });
 
     const [timeLeft, setTimeLeft] = useState(() => {
         const savedTime = localStorage.getItem(timeKey);
-        return savedTime ? parseInt(savedTime, 10) : (exam.duration_minutes * 60);
+        return savedTime ? parseInt(savedTime, 10) : ((exam?.duration_minutes || 60) * 60);
     });
 
-    const [isViolationAlert, setIsViolationAlert] = useState(false);
-
-    // --- 🛡️ SECURE PROCTORING PROTOCOL ---
+    // --- ANTI-CHEAT & PROCTORING ENGINE ---
     useEffect(() => {
         const logIncident = async (type, desc, sev = 'medium') => {
-            console.warn(`PROCTOR ALERT: ${type}`);
-            await supabase
-                .from('proctoring_logs')
-                .insert([{
+            try {
+                await supabase.from('proctoring_logs').insert([{
                     deployment_id: exam.deployment_id,
                     student_id: studentId,
                     incident_type: type,
                     description: desc,
                     severity: sev
                 }]);
+            } catch (e) { console.error("Logging failed", e); }
         };
 
-        const handleVisibility = () => {
+        const handleVisibilityChange = () => {
             if (document.hidden) {
-                logIncident(
-                    "Tab/App Switch", 
-                    `Student left the exam interface. PWA Mode: ${isPWA}`, 
-                    "high"
-                );
+                logIncident("Tab/App Switch", `Student minimized/switched tabs. PWA: ${isPWA}`, "high");
                 setIsViolationAlert(true);
-                alert("⚠️ SECURITY ALERT: You have left the secure exam environment. This incident has been logged and the faculty has been notified.");
+                alert('⚠️ SECURITY WARNING: You have left the exam window. This action has been logged.');
             }
         };
 
         const preventRightClick = (e) => e.preventDefault();
-        document.addEventListener("contextmenu", preventRightClick);
-        document.addEventListener("visibilitychange", handleVisibility);
         
+        window.addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = ''; });
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        document.addEventListener('contextmenu', preventRightClick);
+        document.addEventListener('copy', preventRightClick);
+
         return () => {
-            document.removeEventListener("visibilitychange", handleVisibility);
-            document.removeEventListener("contextmenu", preventRightClick);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            document.removeEventListener('contextmenu', preventRightClick);
+            document.removeEventListener('copy', preventRightClick);
         };
-    }, [exam.deployment_id, studentId, isPWA]);
+    }, [exam, studentId, isPWA]);
 
-
-    // --- ⏳ TIMER LOGIC (WITH AUTO-SAVE) ---
+    // --- TIMER ENGINE ---
     useEffect(() => {
         if (timeLeft <= 0) {
-            handleAutoSubmit();
+            handleFinalSubmit();
             return;
         }
-        
-        const timerId = setInterval(() => {
+        const timer = setInterval(() => {
             setTimeLeft(prev => {
                 const newTime = prev - 1;
-                // 🛡️ Save exact time to device so they can't cheat by refreshing
                 localStorage.setItem(timeKey, newTime.toString());
                 return newTime;
             });
         }, 1000);
-        
-        return () => clearInterval(timerId);
+        return () => clearInterval(timer);
     }, [timeLeft]);
 
     const formatTime = (seconds) => {
-        const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-        const s = (seconds % 60).toString().padStart(2, '0');
-        return `${m}:${s}`;
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
-    // --- 📝 SUBMISSION & INSTANT-SAVE LOGIC ---
-    
-    // 🛡️ 3. INSTANT SAVE ON EVERY CLICK
-    const handleAnswerSelect = (questionId, label) => {
-        const updatedAnswers = { ...answers, [questionId]: label };
-        setAnswers(updatedAnswers);
-        // Write instantly to device physical memory
-        localStorage.setItem(draftKey, JSON.stringify(updatedAnswers));
+    // --- HANDLERS ---
+    const handleOptionSelect = (qId, optionText) => {
+        const newAnswers = { ...answers, [qId]: optionText };
+        setAnswers(newAnswers);
+        localStorage.setItem(draftKey, JSON.stringify(newAnswers)); // Auto-save
     };
 
-    const calculateScore = () => {
+    const toggleFlag = (qId) => {
+        setFlagged(prev => {
+            const next = new Set(prev);
+            if (next.has(qId)) next.delete(qId);
+            else next.add(qId);
+            localStorage.setItem(flagKey, JSON.stringify(Array.from(next))); // Auto-save flags
+            return next;
+        });
+    };
+
+    const handleFinalSubmit = useCallback(() => {
         let score = 0;
         questions.forEach(q => {
             if (answers[q.question_id] === q.correct_answer) score++;
         });
-        return score;
-    };
-
-    const handleManualSubmit = () => {
-        const answeredCount = Object.keys(answers).length;
-        const total = questions.length;
         
-        const msg = answeredCount < total 
-            ? `You have only answered ${answeredCount}/${total} questions. Submit anyway?` 
-            : "Are you sure you want to finish the exam?";
-            
-        if (window.confirm(msg)) finalizeExam();
-    };
-
-    const handleAutoSubmit = () => {
-        alert("Time is up! Your exam is being automatically submitted.");
-        finalizeExam();
-    };
-
-    const finalizeExam = () => {
-        const finalScore = calculateScore();
-        
-        // 🛡️ 4. WIPE MEMORY UPON SUCCESSFUL COMPLETION
+        // Wipe local memory to prevent reopening
         localStorage.removeItem(draftKey);
         localStorage.removeItem(timeKey);
+        localStorage.removeItem(flagKey);
         
-        // Return results to App.jsx for database insertion
-        onComplete(finalScore, questions.length, answers);
-    };
+        onComplete(score, exam.total_marks || questions.length, answers);
+    }, [answers, questions, exam, onComplete, draftKey, timeKey, flagKey]);
 
+
+    // --- RENDER HELPERS ---
+    if (!questions || questions.length === 0) return <div className="p-8 text-center font-bold">Loading exam data...</div>;
+    const currentQ = questions[currentIdx];
+    const isFlagged = flagged.has(currentQ?.question_id);
+
+    // 🛑 CONFIRMATION SCREEN
+    if (showConfirm) {
+        const answeredCount = Object.keys(answers).length;
+        const total = questions.length;
+
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 select-none">
+                <div className="bg-white max-w-lg w-full rounded-2xl shadow-2xl p-8 text-center border border-slate-200 animate-in zoom-in-95">
+                    <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <AlertTriangle size={40} />
+                    </div>
+                    <h2 className="text-3xl font-black text-slate-800 mb-2">Ready to Submit?</h2>
+                    <p className="text-slate-500 mb-8">You will not be able to change your answers after this point.</p>
+                    
+                    <div className="grid grid-cols-3 gap-4 mb-8">
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <span className="block text-2xl font-black text-slate-800">{answeredCount}</span>
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Answered</span>
+                        </div>
+                        <div className="bg-amber-50 p-4 rounded-xl border border-amber-200">
+                            <span className="block text-2xl font-black text-amber-600">{flagged.size}</span>
+                            <span className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Flagged</span>
+                        </div>
+                        <div className="bg-red-50 p-4 rounded-xl border border-red-200">
+                            <span className="block text-2xl font-black text-red-600">{total - answeredCount}</span>
+                            <span className="text-[10px] font-bold text-red-600 uppercase tracking-widest">Skipped</span>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-4 justify-center">
+                        <button onClick={() => setShowConfirm(false)} className="flex-1 bg-slate-100 text-slate-700 hover:bg-slate-200 font-bold py-4 rounded-xl transition-colors">
+                            Return to Exam
+                        </button>
+                        <button onClick={handleFinalSubmit} className="flex-1 bg-green-600 text-white hover:bg-green-700 font-bold py-4 rounded-xl shadow-lg shadow-green-600/20 transition-all active:scale-95">
+                            Yes, Submit
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // 🖥️ MAIN SINGLE-QUESTION UI
     return (
-        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4 pb-24 select-none">
-            
-            {/* STICKY HEADER - PROCTORING & TIMER */}
-            <div className="fixed top-0 left-0 right-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 p-4 flex justify-between items-center z-40 shadow-sm">
-                <div className="flex items-center gap-3">
-                    <ShieldAlert className={isViolationAlert ? "text-red-500 animate-bounce" : "text-indigo-500"} />
-                    <div>
-                        <h2 className="font-bold text-slate-800 dark:text-white text-sm md:text-lg truncate max-w-[150px] md:max-w-none">
-                            {exam.title}
-                        </h2>
-                        <span className="text-[10px] bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded font-bold uppercase tracking-widest flex items-center gap-1">
-                            <span className="w-1 h-1 rounded-full bg-red-500 animate-pulse" /> Live Proctoring
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center md:p-6 select-none">
+            <div className="bg-white w-full h-screen md:h-[90vh] md:max-h-[900px] md:max-w-4xl md:rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
+                
+                {/* Header */}
+                <div className={`px-6 py-4 flex justify-between items-center shrink-0 shadow-md z-10 ${isViolationAlert ? 'bg-red-600' : 'bg-blue-600'} text-white transition-colors`}>
+                    <div className="flex items-center gap-2 overflow-hidden pr-4">
+                        {isViolationAlert && <ShieldAlert size={20} className="animate-pulse shrink-0" />}
+                        <h1 className="font-bold text-lg tracking-wide truncate">{exam?.title || 'Secure Assessment'}</h1>
+                    </div>
+                    <div className={`font-mono font-black text-lg px-3 py-1 rounded-lg shrink-0 ${timeLeft < 300 ? 'bg-red-500 animate-pulse' : 'bg-blue-800'}`}>
+                        {formatTime(timeLeft)}
+                    </div>
+                </div>
+
+                {/* Question Area */}
+                <div className="flex-1 overflow-y-auto p-6 md:p-8 relative">
+                    <div className="flex justify-between items-center mb-6">
+                        <span className="text-sm font-bold text-slate-400 uppercase tracking-widest">
+                            Question {currentIdx + 1} of {questions.length}
                         </span>
+                        <button 
+                            onClick={() => toggleFlag(currentQ.question_id)}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-bold transition-colors ${
+                                isFlagged ? 'bg-amber-100 text-amber-700 border border-amber-300' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                            }`}
+                        >
+                            <Flag size={16} className={isFlagged ? 'fill-amber-500' : ''} />
+                            {isFlagged ? 'Flagged' : 'Flag for Review'}
+                        </button>
                     </div>
-                </div>
-                
-                <div className={`flex items-center gap-2 px-4 py-2 rounded-lg font-mono font-bold text-lg border ${
-                    timeLeft < 300 
-                        ? 'bg-red-50 text-red-600 border-red-200 dark:bg-red-900/20 animate-pulse' 
-                        : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
-                }`}>
-                    <Clock size={18} />
-                    {formatTime(timeLeft)}
-                </div>
-            </div>
-            
-            {/* CONTENT AREA */}
-            <div className="mt-24 max-w-3xl mx-auto space-y-6">
-                
-                {/* Progress Bar */}
-                <div className="bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 sticky top-20 z-30">
-                    <div className="flex justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
-                        <span>Progress</span>
-                        <span>{Object.keys(answers).length} / {questions.length} Answered</span>
-                    </div>
-                    <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                        <div 
-                            className="bg-indigo-600 h-full transition-all duration-500" 
-                            style={{ width: `${(Object.keys(answers).length / questions.length) * 100}%` }}
-                        />
+
+                    <h2 className="text-xl md:text-2xl font-bold text-slate-800 mb-8 leading-relaxed">
+                        {currentQ?.question_text}
+                    </h2>
+
+                    {currentQ?.image_url && (
+                        <div className="mb-8 rounded-xl overflow-hidden border border-slate-200 bg-slate-50 flex justify-center">
+                            <img src={currentQ.image_url} alt="Reference" className="max-h-80 object-contain mix-blend-multiply" />
+                        </div>
+                    )}
+
+                    <div className="space-y-3 pb-8">
+                        {currentQ?.options && (Array.isArray(currentQ.options) ? currentQ.options : JSON.parse(currentQ.options)).map((opt, i) => {
+                            const selected = answers[currentQ.question_id] === opt;
+                            return (
+                                <div 
+                                    key={i}
+                                    onClick={() => handleOptionSelect(currentQ.question_id, opt)}
+                                    className={`p-4 md:p-5 border-2 rounded-xl cursor-pointer transition-all flex items-center gap-4 group ${
+                                        selected 
+                                            ? 'border-blue-600 bg-blue-50 text-blue-900 shadow-sm' 
+                                            : 'border-slate-200 hover:border-blue-300 hover:bg-slate-50 text-slate-700'
+                                    }`}
+                                >
+                                    <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                                        selected ? 'border-blue-600 bg-blue-600' : 'border-slate-300 group-hover:border-blue-400'
+                                    }`}>
+                                        {selected && <div className="w-2 h-2 bg-white rounded-full" />}
+                                    </div>
+                                    <span className={`text-base md:text-lg font-medium ${selected ? 'font-bold' : ''}`}>
+                                        {opt}
+                                    </span>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
 
-                {/* Questions */}
-                {questions.map((q, i) => (
-                    <div key={q.question_id} className="bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
-                        <div className="flex gap-4 mb-6">
-                            <span className="shrink-0 w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 flex items-center justify-center font-bold text-sm">
-                                {i + 1}
-                            </span>
-                            <h3 className="font-bold text-lg text-slate-800 dark:text-white leading-relaxed pt-0.5">
-                                {q.question_text}
-                            </h3>
+                {/* Footer Controls & Palette */}
+                <div className="bg-slate-50 border-t border-slate-200 p-4 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+                    <div className="flex justify-between items-center mb-4">
+                        <button 
+                            onClick={() => setCurrentIdx(prev => Math.max(0, prev - 1))}
+                            disabled={currentIdx === 0}
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-slate-600 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            <ChevronLeft size={20} /> <span className="hidden md:inline">Previous</span>
+                        </button>
+
+                        {currentIdx === questions.length - 1 ? (
+                            <button 
+                                onClick={() => setShowConfirm(true)}
+                                className="flex items-center gap-2 px-6 md:px-8 py-2.5 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 shadow-md shadow-green-600/20 transition-all active:scale-95"
+                            >
+                                <CheckCircle size={20} /> Finish
+                            </button>
+                        ) : (
+                            <button 
+                                onClick={() => setCurrentIdx(prev => Math.min(questions.length - 1, prev + 1))}
+                                className="flex items-center gap-2 px-6 md:px-8 py-2.5 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-600/20 transition-all active:scale-95"
+                            >
+                                Next <ChevronRight size={20} />
+                            </button>
+                        )}
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-200">
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 text-center">
+                            Question Navigator
                         </div>
-                        
-                        <div className="space-y-3 pl-12">
-                            {(() => {
-                                let opts = [];
-                                try {
-                                    opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options);
-                                } catch (e) { opts = ["Error loading options"]; }
+                        <div className="flex flex-wrap justify-center gap-1.5 md:gap-2 max-h-[120px] overflow-y-auto p-1 scroll-smooth no-scrollbar">
+                            {questions.map((q, i) => {
+                                const hasAns = !!answers[q.question_id];
+                                const isFlag = flagged.has(q.question_id);
+                                const isCurr = currentIdx === i;
+
+                                let baseStyle = "w-8 h-8 md:w-10 md:h-10 rounded-md border flex items-center justify-center text-xs md:text-sm font-bold cursor-pointer transition-all relative ";
                                 
-                                return opts.map((opt, j) => { 
-                                    const label = ['A','B','C','D','E'][j]; 
-                                    const isSelected = answers[q.question_id] === label; 
-                                    
-                                    return (
-                                        <button 
-                                            key={j} 
-                                            onClick={() => handleAnswerSelect(q.question_id, label)}
-                                            className={`w-full flex items-start p-4 rounded-xl border-2 transition-all text-left ${
-                                                isSelected 
-                                                    ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/20' 
-                                                    : 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700'
-                                            }`}
-                                        >
-                                            <div className={`w-5 h-5 mt-0.5 rounded-full border-2 mr-4 flex items-center justify-center shrink-0 ${
-                                                isSelected ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-slate-300 dark:border-slate-600'
-                                            }`}>
-                                                {isSelected && <CheckCircle size={12} />}
-                                            </div>
-                                            <span className={`text-base ${isSelected ? 'text-indigo-900 dark:text-indigo-100 font-bold' : 'text-slate-600 dark:text-slate-400'}`}>
-                                                {opt}
-                                            </span>
-                                        </button>
-                                    );
-                                });
-                            })()}
+                                if (hasAns) baseStyle += "bg-blue-600 border-blue-600 text-white ";
+                                else baseStyle += "bg-white border-slate-300 text-slate-500 hover:bg-slate-100 ";
+
+                                if (isCurr) baseStyle += "ring-2 ring-amber-500 ring-offset-2 z-10 ";
+
+                                return (
+                                    <button 
+                                        key={q.question_id}
+                                        onClick={() => setCurrentIdx(i)}
+                                        className={baseStyle}
+                                    >
+                                        {i + 1}
+                                        {isFlag && <div className="absolute -top-1 -right-1 w-3 h-3 bg-amber-500 border-2 border-white rounded-full shadow-sm" />}
+                                    </button>
+                                );
+                            })}
                         </div>
                     </div>
-                ))}
-            </div>
-
-            {/* SUBMIT FOOTER */}
-            <div className="fixed bottom-0 left-0 right-0 p-4 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 z-40">
-                <button 
-                    onClick={handleManualSubmit} 
-                    className="w-full max-w-3xl mx-auto flex justify-center items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95"
-                >
-                    Submit Secure Assessment
-                </button>
+                </div>
             </div>
         </div>
     );
-};
-
-export default ActiveExamInterface;
+}
