@@ -1,14 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
 import InteractiveMindMap from '../layout/InteractiveMindMap';
-import { Folder, ChevronDown, ChevronRight, Layers, FileText } from 'lucide-react';
+import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2 } from 'lucide-react';
 
 const AtlasView = () => {
     const [activeTab, setActiveTab] = useState('flashcards');
     const [flashcards, setFlashcards] = useState([]);
     const [mindmaps, setMindmaps] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [flippedCards, setFlippedCards] = useState({});
+    
+    // 🛡️ PROGRESS TRACKING ENGINE
+    const [flippedCards, setFlippedCards] = useState({}); // Tracks what is currently flipped
+    const [reviewedCards, setReviewedCards] = useState(() => {
+        // Hydrate reviewed status from device memory
+        const saved = localStorage.getItem('atlas_reviewed_cards');
+        return saved ? new Set(JSON.parse(saved)) : new Set();
+    });
     
     const [expandedChapters, setExpandedChapters] = useState({});
 
@@ -69,8 +76,20 @@ const AtlasView = () => {
         fetchAtlasData();
     }, []);
 
+    // 🚀 THE FIX: Handle Flip and save to Reviewed Memory
     const toggleFlip = (id) => {
+        // Toggle the visual flip animation
         setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }));
+        
+        // Mark as permanently reviewed in local storage
+        setReviewedCards(prev => {
+            const next = new Set(prev);
+            if (!next.has(id)) {
+                next.add(id);
+                localStorage.setItem('atlas_reviewed_cards', JSON.stringify([...next]));
+            }
+            return next;
+        });
     };
 
     const toggleFolder = (chapter) => {
@@ -144,59 +163,99 @@ const AtlasView = () => {
                                 <span className="italic font-medium">No flashcards published yet.</span>
                             </div>
                         ) : (
-                            // 🚀 FIXED: Natural Numerical Sorting injected here
                             Object.entries(groupedFlashcards)
                                 .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
-                                .map(([chapterName, cards]) => (
-                                <div key={chapterName} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 transition-all hover:border-indigo-300 dark:hover:border-indigo-700">
-                                    <h3 
-                                        onClick={() => toggleFolder(chapterName)}
-                                        className="font-bold text-xl text-slate-800 dark:text-white flex items-center gap-3 cursor-pointer select-none hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group"
-                                    >
-                                        <div className="p-1.5 bg-slate-100 dark:bg-slate-800 rounded-md group-hover:bg-indigo-50 dark:group-hover:bg-indigo-900/30 transition-colors">
-                                            {expandedChapters[chapterName] ? <ChevronDown size={20} className="text-slate-500" /> : <ChevronRight size={20} className="text-slate-500" />}
-                                        </div>
-                                        <Folder size={24} className="text-indigo-500" /> 
-                                        {chapterName}
-                                        <span className="text-xs font-bold text-slate-500 dark:text-slate-400 ml-auto bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-full uppercase tracking-wider">
-                                            {cards.length} Cards
-                                        </span>
-                                    </h3>
+                                .map(([chapterName, cards]) => {
                                     
-                                    {expandedChapters[chapterName] && (
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
-                                            {cards.map(card => (
-                                                <div key={card.id} onClick={() => toggleFlip(card.id)} className="cursor-pointer group perspective-1000 h-64 w-full">
-                                                    <div className={`relative w-full h-full transition-transform duration-500 transform-style-3d ${flippedCards[card.id] ? 'rotate-y-180' : ''}`}>
-                                                        
-                                                        {/* Front of Card (Question) */}
-                                                        <div className="absolute inset-0 backface-hidden bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 flex flex-col justify-center items-center text-center shadow-sm hover:shadow-md transition-shadow hover:border-indigo-300 dark:hover:border-indigo-700">
-                                                            <span className="absolute top-4 left-4 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-                                                                <div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div> Question
-                                                            </span>
-                                                            <h3 className="text-lg font-bold text-slate-800 dark:text-white leading-relaxed">{card.question}</h3>
-                                                            <span className="absolute bottom-4 text-xs font-medium text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity">Click to flip</span>
-                                                        </div>
-                                                        
-                                                        {/* Back of Card (Answer) */}
-                                                        <div className="absolute inset-0 backface-hidden rotate-y-180 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-200 dark:border-indigo-800/50 p-6 flex flex-col justify-center items-center text-center shadow-sm">
-                                                            <span className="absolute top-4 left-4 text-[10px] font-bold text-indigo-400 dark:text-indigo-500 uppercase tracking-widest flex items-center gap-1.5">
-                                                                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400"></div> Answer
-                                                            </span>
-                                                            <p className="text-md font-medium text-indigo-900 dark:text-indigo-100 leading-relaxed overflow-y-auto w-full no-scrollbar px-2">{card.answer}</p>
-                                                        </div>
+                                    // 🚀 Calculate Folder Progress
+                                    const reviewedCount = cards.filter(c => reviewedCards.has(c.id)).length;
+                                    const totalCount = cards.length;
+                                    const progressPercent = Math.round((reviewedCount / totalCount) * 100);
 
+                                    return (
+                                        <div key={chapterName} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 transition-all hover:border-indigo-300 dark:hover:border-indigo-700">
+                                            
+                                            {/* Folder Header */}
+                                            <div 
+                                                onClick={() => toggleFolder(chapterName)}
+                                                className="flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer select-none group"
+                                            >
+                                                <h3 className="font-bold text-xl text-slate-800 dark:text-white flex items-center gap-3 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                                                    <div className="p-1.5 bg-slate-100 dark:bg-slate-800 rounded-md group-hover:bg-indigo-50 dark:group-hover:bg-indigo-900/30 transition-colors">
+                                                        {expandedChapters[chapterName] ? <ChevronDown size={20} className="text-slate-500" /> : <ChevronRight size={20} className="text-slate-500" />}
                                                     </div>
+                                                    <Folder size={24} className="text-indigo-500 shrink-0" /> 
+                                                    <span className="truncate">{chapterName}</span>
+                                                </h3>
+
+                                                {/* 🚀 Folder Progress Bar */}
+                                                <div className="flex items-center gap-4 bg-slate-50 dark:bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-100 dark:border-slate-700/50 ml-11 md:ml-0">
+                                                    <div className="w-24 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                                        <div 
+                                                            className={`h-full transition-all duration-500 ${progressPercent === 100 ? 'bg-green-500' : 'bg-indigo-500'}`} 
+                                                            style={{ width: `${progressPercent}%` }} 
+                                                        />
+                                                    </div>
+                                                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 tracking-widest">
+                                                        {reviewedCount} / {totalCount}
+                                                    </span>
                                                 </div>
-                                            ))}
+                                            </div>
+                                            
+                                            {/* Folder Content (Cards) */}
+                                            {expandedChapters[chapterName] && (
+                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
+                                                    {cards.map(card => {
+                                                        const isReviewed = reviewedCards.has(card.id);
+
+                                                        return (
+                                                            <div key={card.id} onClick={() => toggleFlip(card.id)} className="cursor-pointer group perspective-1000 h-64 w-full">
+                                                                <div className={`relative w-full h-full transition-transform duration-500 transform-style-3d ${flippedCards[card.id] ? 'rotate-y-180' : ''}`}>
+                                                                    
+                                                                    {/* Front of Card (Question) */}
+                                                                    <div className={`absolute inset-0 backface-hidden bg-slate-50 dark:bg-slate-800 rounded-2xl border p-6 flex flex-col justify-center items-center text-center shadow-sm hover:shadow-md transition-all
+                                                                        ${isReviewed 
+                                                                            ? 'border-green-200 dark:border-green-900/30 bg-green-50/30 dark:bg-green-900/10' 
+                                                                            : 'border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-700'
+                                                                        }
+                                                                    `}>
+                                                                        <span className="absolute top-4 left-4 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                                                            <div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div> Question
+                                                                        </span>
+
+                                                                        {/* 🚀 Reviewed Badge */}
+                                                                        {isReviewed && (
+                                                                            <span className="absolute top-4 right-4 text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-widest flex items-center gap-1 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded-md">
+                                                                                <CheckCircle2 size={12} /> Reviewed
+                                                                            </span>
+                                                                        )}
+
+                                                                        <h3 className="text-lg font-bold text-slate-800 dark:text-white leading-relaxed">{card.question}</h3>
+                                                                        
+                                                                        <span className="absolute bottom-4 text-xs font-medium text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity">Click to flip</span>
+                                                                    </div>
+                                                                    
+                                                                    {/* Back of Card (Answer) */}
+                                                                    <div className="absolute inset-0 backface-hidden rotate-y-180 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl border border-indigo-200 dark:border-indigo-800/50 p-6 flex flex-col justify-center items-center text-center shadow-sm">
+                                                                        <span className="absolute top-4 left-4 text-[10px] font-bold text-indigo-400 dark:text-indigo-500 uppercase tracking-widest flex items-center gap-1.5">
+                                                                            <div className="w-1.5 h-1.5 rounded-full bg-indigo-400"></div> Answer
+                                                                        </span>
+                                                                        <p className="text-md font-medium text-indigo-900 dark:text-indigo-100 leading-relaxed overflow-y-auto w-full no-scrollbar px-2">{card.answer}</p>
+                                                                    </div>
+
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
-                                </div>
-                            ))
+                                    );
+                                })
                         )
                     )}
 
-                    {/* --- MIND MAPS TAB --- */}
+                    {/* --- MIND MAPS TAB (Unchanged) --- */}
                     {activeTab === 'mindmaps' && (
                         Object.keys(groupedMindmaps).length === 0 ? (
                             <div className="p-12 text-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center gap-3">
@@ -204,7 +263,6 @@ const AtlasView = () => {
                                 <span className="italic font-medium">No mind maps published yet.</span>
                             </div>
                         ) : (
-                            // 🚀 FIXED: Natural Numerical Sorting injected here
                             Object.entries(groupedMindmaps)
                                 .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
                                 .map(([chapterName, maps]) => (

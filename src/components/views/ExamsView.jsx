@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
     Users, History, ChevronDown, ChevronRight, 
-    CheckCircle, XCircle, FileSearch, X, Info 
+    CheckCircle, XCircle, FileSearch, X, Info, Clock 
 } from 'lucide-react';
 
 const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
@@ -130,15 +130,25 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart }) => {
                                                 <h4 className="font-bold text-slate-700 dark:text-slate-200 text-lg">{e.exam_master?.title || 'Exam'}</h4>
                                                 <span className="text-xs text-slate-500">Submitted: {new Date(e.submitted_at).toLocaleDateString()}</span>
                                             </div>
-                                            <div className="flex items-center gap-6 w-full md:w-auto shrink-0 justify-between md:justify-end">
-                                                <div className="text-right">
-                                                    <span className="text-2xl font-black text-green-600">{e.score} <span className="text-sm text-slate-400">/ {e.total_marks}</span></span>
-                                                    <span className="block text-[10px] font-bold text-green-700 uppercase tracking-widest">Published</span>
+
+                                            {/* 🚀 THE FIX: Check if status is 'published' before allowing Review */}
+                                            {e.status === 'published' ? (
+                                                <div className="flex items-center gap-6 w-full md:w-auto shrink-0 justify-between md:justify-end">
+                                                    <div className="text-right">
+                                                        <span className="text-2xl font-black text-green-600">{e.score} <span className="text-sm text-slate-400">/ {e.total_marks}</span></span>
+                                                        <span className="block text-[10px] font-bold text-green-700 uppercase tracking-widest">Published</span>
+                                                    </div>
+                                                    <button onClick={() => setReviewExam(e)} className="flex items-center gap-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 px-4 py-2 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-all">
+                                                        <FileSearch size={18} /> Review
+                                                    </button>
                                                 </div>
-                                                <button onClick={() => setReviewExam(e)} className="flex items-center gap-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 px-4 py-2 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-all">
-                                                    <FileSearch size={18} /> Review
-                                                </button>
-                                            </div>
+                                            ) : (
+                                                <div className="flex items-center w-full md:w-auto shrink-0 justify-between md:justify-end">
+                                                    <span className="font-mono font-bold bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 px-4 py-2 rounded-xl border border-amber-100 dark:border-amber-800/50 text-xs shadow-sm uppercase tracking-wider flex items-center gap-2">
+                                                        <Clock size={14} /> Pending Release
+                                                    </span>
+                                                </div>
+                                            )}
                                         </div>
                                     ))}
                                 </div>

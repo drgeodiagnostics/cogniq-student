@@ -145,54 +145,46 @@ function App() {
         const classIds = enrollments.map(e => e.classroom_id);
         const myClassrooms = enrollments.map(e => ({ ...e.classroom_master, classroom_id: e.classroom_id })).filter(Boolean);
 
-        // 🚀 THE FIX: Pulling 'answers' AND the encrypted 'question_bank'
         const { data: rawSubmissions } = await supabase
             .from('exam_submissions')
             .select('submission_id, exam_id, score, total_marks, status, submitted_at, answers, exam_master(title, classroom_master(name), questions:question_bank(*))') 
             .eq('student_id', uid);
         
-        // 🛡️ SQB DECRYPTION ENGINE: Optimized for 'explanations' JSONB column
-const decryptedSubmissions = rawSubmissions?.map(sub => {
-    if (sub.exam_master?.questions) {
-        sub.exam_master.questions = sub.exam_master.questions.map(q => {
-            // 1. Decrypt Options (Standard)
-            let parsedOptions = q.options;
-            if (q.options?.cipher) {
-                try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } 
-                catch (e) { console.error("Decryption failed for Options", q.question_id); }
-            }
-
-            // 2. 🚀 THE JSONB EXPLANATIONS FIX
-            let finalRationale = null;
-            
-            // Check if the 'explanations' JSON object exists
-            if (q.explanations) {
-                // If it follows the SQB pattern { cipher: "..." }
-                if (q.explanations.cipher) {
-                    try {
-                        finalRationale = decryptAES256(q.explanations.cipher);
-                    } catch (e) {
-                        console.error("Decryption failed for Explanations", q.question_id);
-                    }
-                } 
-                // Fallback: If it's just a JSON object with a 'text' key or similar
-                else {
-                    finalRationale = q.explanations.text || q.explanations.rationale || JSON.stringify(q.explanations);
-                }
-            }
-
-            return { 
-                ...q, 
-                question_text: decryptAES256(q.question_text), 
-                options: parsedOptions,
-                rationale: finalRationale // We map it back to 'rationale' so the UI can stay the same
-            };
-        });
-    }
-    return sub;
-});
+        // Separate In-Progress exams from Completed exams
+        const completedSubmissions = rawSubmissions?.filter(sub => sub.status !== 'in_progress') || [];
         
-        const takenExamIds = new Set(decryptedSubmissions?.map(s => s.exam_id) || []);
+        // 🛡️ SQB DECRYPTION ENGINE
+        const decryptedSubmissions = completedSubmissions.map(sub => {
+            if (sub.exam_master?.questions) {
+                sub.exam_master.questions = sub.exam_master.questions.map(q => {
+                    let parsedOptions = q.options;
+                    if (q.options?.cipher) {
+                        try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } 
+                        catch (e) { console.error("Decryption failed", q.question_id); }
+                    }
+
+                    let finalRationale = null;
+                    if (q.explanations) {
+                        if (q.explanations.cipher) {
+                            try { finalRationale = decryptAES256(q.explanations.cipher); } catch (e) { }
+                        } else {
+                            finalRationale = q.explanations.text || q.explanations.rationale || JSON.stringify(q.explanations);
+                        }
+                    }
+
+                    return { 
+                        ...q, 
+                        question_text: decryptAES256(q.question_text), 
+                        options: parsedOptions,
+                        rationale: finalRationale 
+                    };
+                });
+            }
+            return sub;
+        });
+        
+        // Only block exams that are fully completed
+        const takenExamIds = new Set(completedSubmissions.map(s => s.exam_id));
         
         const { data: deployments } = await supabase.from('exam_deployments')
             .select(`deployment_id, scheduled_at, duration_minutes, status, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
@@ -203,7 +195,6 @@ const decryptedSubmissions = rawSubmissions?.map(sub => {
         const availableExams = (deployments || []).filter(d => d.exam && !takenExamIds.has(d.exam.exam_id));
 
         const { data: announcements } = await supabase.from('announcements').select('*, user_master(full_name)').in('classroom_id', classIds).order('created_at', { ascending: false }).limit(10);
-        
         const { data: mentorData } = await supabase.from('mentorship_assignments').select('mentor_id, user:mentor_id(full_name, email)').eq('mentee_id', uid).maybeSingle();
 
         setDashboardData({
@@ -244,11 +235,23 @@ const decryptedSubmissions = rawSubmissions?.map(sub => {
               return { ...q, question_text: decryptAES256(q.question_text), options: parsedOptions };
           });
 
-          setCurrentExam({ ...deployment.exam, deployment_id: deployment.deployment_id }); 
+          // 🚀 THE FIX: Inject the specific deployment duration into the currentExam object
+          setCurrentExam({ 
+              ...deployment.exam, 
+              deployment_id: deployment.deployment_id,
+              duration_minutes: deployment.duration_minutes // <-- Ensures the timer starts correctly!
+          }); 
+          
           setExamQuestions(decryptedQuestions); 
           setView('taking_exam'); 
           
-          await supabase.from('proctoring_logs').insert([{ deployment_id: deployment.deployment_id, student_id: session.user.id, incident_type: 'exam_start', description: 'Student started the exam session.', severity: 'low' }]);
+          await supabase.from('proctoring_logs').insert([{ 
+              deployment_id: deployment.deployment_id, 
+              student_id: session.user.id, 
+              incident_type: 'exam_start', 
+              description: 'Student started the exam session.', 
+              severity: 'low' 
+          }]);
 
       } catch (err) {
           alert("Architecture Fault: " + err.message);
@@ -286,18 +289,19 @@ const decryptedSubmissions = rawSubmissions?.map(sub => {
         exam={currentExam} 
         questions={examQuestions} 
         studentId={session.user.id} 
-        isPWA={isPWA} // Pass PWA status to toggle native behaviors
+        isPWA={isPWA}
         onComplete={(score, total, answers) => { 
-            supabase.from('exam_submissions').insert([{ 
-                exam_id: currentExam.exam_id, 
-                student_id: session.user.id, 
+            supabase.from('exam_submissions').update({ 
                 score, 
                 total_marks: total, 
-                answers,
-                status: 'pending' // Default status for new submissions
-            }]).then(() => {
+                status: 'pending', // 🔒 Locks the review until faculty changes it
+                answers
+            })
+            .eq('exam_id', currentExam.exam_id)
+            .eq('student_id', session.user.id)
+            .then(() => {
                 setCurrentExam(null); setExamQuestions([]); // PURGE MEMORY
-                alert("Submission Successful! Your results are being processed.");
+                alert("Submission Successful! Your results are pending faculty release.");
                 fetchDashboardData(); setView('dashboard'); 
             });
         }} 
