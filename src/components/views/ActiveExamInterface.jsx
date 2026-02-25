@@ -100,21 +100,55 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     };
 
 
-    // --- ANTI-CHEAT ENGINE ---
+    // --- 🛡️ HIGH-SENSITIVITY PROCTORING ENGINE ---
     useEffect(() => {
-        const handleBeforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
-        window.addEventListener('beforeunload', handleBeforeUnload);
-
-        const handleVisibilityChange = () => {
-            if (document.hidden) alert('⚠️ SECURITY WARNING: You have left the exam window. This action has been logged.');
+        // Function to log incidents to Supabase immediately
+        const logSecurityViolation = async (type, detail) => {
+            setSyncStatus('error'); // Visual cue for student that they are "caught"
+            await supabase.from('proctoring_logs').insert([{
+                deployment_id: exam.deployment_id,
+                student_id: studentId,
+                incident_type: type,
+                description: detail,
+                severity: 'high'
+            }]);
+            setTimeout(() => setSyncStatus('synced'), 2000);
         };
+
+        // 1. Detect Tab Switching / Minimizing / Lock Screen
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                logSecurityViolation('visibility_hidden', 'Student minimized the app or switched tabs.');
+                alert('⚠️ SECURITY ALERT: App minimized. This incident has been reported to the faculty.');
+            }
+        };
+
+        // 2. Detect iPad Split View / Window Resizing
+        // iPads change window dimensions when Slide Over or Split View is activated
+        let lastWidth = window.innerWidth;
+        let lastHeight = window.innerHeight;
+
+        const handleResize = () => {
+            if (window.innerWidth !== lastWidth || window.innerHeight !== lastHeight) {
+                logSecurityViolation('window_resize', `Window resized to ${window.innerWidth}x${window.innerHeight}. Potential Split View detected.`);
+                lastWidth = window.innerWidth;
+                lastHeight = window.innerHeight;
+            }
+        };
+
+        // 3. Prevent Context Menu (Long press for 'Copy')
+        const preventContextMenu = (e) => e.preventDefault();
+
         document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('resize', handleResize);
+        window.addEventListener('contextmenu', preventContextMenu);
 
         return () => {
-            window.removeEventListener('beforeunload', handleBeforeUnload);
             document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('resize', handleResize);
+            window.removeEventListener('contextmenu', preventContextMenu);
         };
-    }, []);
+    }, [exam.deployment_id, studentId]);
 
     // --- TIMER ENGINE ---
     useEffect(() => {
