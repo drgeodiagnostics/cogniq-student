@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../../supabaseClient'; // 👈 Make sure this path matches your project!
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../../supabaseClient'; 
 import { ChevronLeft, ChevronRight, Flag, CheckCircle, AlertTriangle, Clock, LayoutGrid, Eraser, Cloud, CloudOff, Loader2 } from 'lucide-react';
 
 export default function ActiveExamInterface({ exam, questions, studentId, isPWA, onComplete }) {
@@ -31,38 +31,47 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         return saved ? parseInt(saved, 10) : (exam?.duration_minutes || 60) * 60;
     });
 
+    // 🛡️ GATEKEEPER TO PREVENT REACT DOUBLE-MOUNTS
+    const initRef = useRef(false);
+
     // --- CLOUD SYNC ENGINE ---
     useEffect(() => {
+        // If this has already run once, completely block it from running again
+        if (initRef.current) return;
+        initRef.current = true;
+
         const initCloudSession = async () => {
-            const { data } = await supabase
+            // Use .limit(1) to safely grab the first row
+            const { data, error } = await supabase
                 .from('exam_submissions')
                 .select('submission_id, answers')
                 .eq('exam_id', exam.exam_id)
                 .eq('student_id', studentId)
-                .maybeSingle();
+                .limit(1);
 
-            if (data) {
-                setSubmissionId(data.submission_id);
+            if (data && data.length > 0) {
+                const existingRow = data[0];
+                setSubmissionId(existingRow.submission_id);
                 
-                // 🚀 THE FIX: Hydrate answers from the Cloud if local memory is empty
-                if (data.answers && Object.keys(data.answers).length > 0) {
+                // Hydrate answers from the Cloud if local memory is empty
+                if (existingRow.answers && Object.keys(existingRow.answers).length > 0) {
                     setAnswers(prev => {
-                        // If the browser memory is completely empty, restore from Supabase
                         if (Object.keys(prev).length === 0) {
-                            localStorage.setItem(DRAFT_KEY, JSON.stringify(data.answers));
-                            return data.answers;
+                            localStorage.setItem(DRAFT_KEY, JSON.stringify(existingRow.answers));
+                            return existingRow.answers;
                         }
-                        return prev; // Otherwise, trust the local device memory
+                        return prev; 
                     });
                 }
             } else {
+                // First time ever taking this exam: Create ONE draft
                 const { data: newRow } = await supabase
                     .from('exam_submissions')
                     .insert([{ 
                         exam_id: exam.exam_id, 
                         student_id: studentId, 
                         status: 'in_progress', 
-                        answers: answers 
+                        answers: {} // Start empty to prevent state dependency loop
                     }])
                     .select('submission_id')
                     .single();
