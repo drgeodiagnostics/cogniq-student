@@ -232,7 +232,7 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                 </div>
             </div>
 
-            {/* --- REVIEW MODAL --- (Kept original logic) */}
+            {/* --- REVIEW MODAL --- */}
             {reviewExam && (
                 <div className="fixed inset-0 bg-slate-50 dark:bg-[#0b0f19] z-[100] flex flex-col animate-in fade-in zoom-in-95 duration-200">
                     <div className="h-20 px-6 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 shadow-sm z-10 shrink-0">
@@ -245,96 +245,135 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
 
                     <div className="flex-1 overflow-y-auto p-4 md:p-8">
                         <div className="max-w-4xl mx-auto space-y-6 pb-20">
-                            {/* Summary Chips */}
-                            <div className="grid grid-cols-3 gap-4 mb-8">
-                                {(() => {
-                                    const total = reviewExam.exam_master.questions.length;
-                                    const correct = reviewExam.exam_master.questions.filter(q => reviewExam.answers[q.question_id] === q.correct_answer).length;
-                                    const skipped = reviewExam.exam_master.questions.filter(q => !reviewExam.answers[q.question_id]).length;
-                                    const incorrect = total - correct - skipped;
-                                    return (
-                                        <>
+                            {(() => {
+                                // 1. 🚀 ROBUST EVALUATION ENGINE
+                                const total = reviewExam.exam_master.questions.length;
+                                let correctCount = 0;
+                                let skippedCount = 0;
+
+                                const evaluatedQuestions = reviewExam.exam_master.questions.map(q => {
+                                    const studentAnswer = reviewExam.answers[q.question_id];
+                                    let isSkipped = !studentAnswer;
+                                    let isCorrect = false;
+
+                                    if (!isSkipped) {
+                                        let sAns = String(studentAnswer).trim().toUpperCase();
+                                        let cAns = String(q.correct_answer || '').trim().toUpperCase();
+                                        
+                                        // Direct match check
+                                        if (sAns === cAns) {
+                                            isCorrect = true;
+                                        } else {
+                                            // Cross-reference letter vs text match
+                                            let opts = [];
+                                            try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch(e) {}
+                                            
+                                            for (let j = 0; j < opts.length; j++) {
+                                                const label = ['A','B','C','D','E'][j];
+                                                const optText = String(opts[j] || '').trim().toUpperCase();
+                                                if ((sAns === label || sAns === optText) && (cAns === label || cAns === optText)) {
+                                                    isCorrect = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (isSkipped) skippedCount++;
+                                    else if (isCorrect) correctCount++;
+
+                                    return { ...q, isSkipped, isCorrect, studentAnswer };
+                                });
+
+                                const incorrectCount = total - correctCount - skippedCount;
+
+                                return (
+                                    <>
+                                        {/* 📊 DYNAMIC SUMMARY CHIPS */}
+                                        <div className="grid grid-cols-3 gap-4 mb-8">
                                             <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border-b-4 border-green-500 shadow-sm text-center">
                                                 <span className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Correct</span>
-                                                <span className="text-2xl font-black text-green-600">{correct}</span>
+                                                <span className="text-2xl font-black text-green-600">{correctCount}</span>
                                             </div>
                                             <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border-b-4 border-red-500 shadow-sm text-center">
                                                 <span className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Incorrect</span>
-                                                <span className="text-2xl font-black text-red-600">{incorrect}</span>
+                                                <span className="text-2xl font-black text-red-600">{incorrectCount}</span>
                                             </div>
                                             <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border-b-4 border-slate-400 shadow-sm text-center">
                                                 <span className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Skipped</span>
-                                                <span className="text-2xl font-black text-slate-500">{skipped}</span>
-                                            </div>
-                                        </>
-                                    );
-                                })()}
-                            </div>
-
-                            {reviewExam.exam_master.questions.map((q, i) => {
-                                const studentAnswer = reviewExam.answers[q.question_id];
-                                const isSkipped = !studentAnswer;
-                                const isCorrect = !isSkipped && studentAnswer === q.correct_answer;
-                                let opts = [];
-                                try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch (e) { opts = []; }
-
-                                return (
-                                    <div key={q.question_id} className={`bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[32px] border-2 shadow-sm ${isSkipped ? 'border-slate-200 dark:border-slate-800' : isCorrect ? 'border-green-200 dark:border-green-900/50' : 'border-red-200 dark:border-red-900/50'}`}>
-                                        <div className="flex gap-4 mb-6">
-                                            <span className={`shrink-0 w-10 h-10 rounded-2xl flex items-center justify-center font-black text-lg ${isSkipped ? 'bg-slate-100 text-slate-500 dark:bg-slate-800' : isCorrect ? 'bg-green-100 text-green-600 dark:bg-green-900/50' : 'bg-red-100 text-red-600 dark:bg-red-900/50'}`}>{i + 1}</span>
-                                            <div className="flex-1 pt-1.5">
-                                                <h3 className="font-bold text-lg md:text-xl text-slate-800 dark:text-white leading-relaxed">{q.question_text}</h3>
-                                                <div className="mt-2 flex items-center gap-2">
-                                                    {isSkipped ? <span className="text-[10px] font-black text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded uppercase tracking-widest">Not Answered</span>
-                                                    : isCorrect ? <span className="text-[10px] font-black text-green-600 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded uppercase tracking-widest">Correct</span>
-                                                    : <span className="text-[10px] font-black text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded uppercase tracking-widest">Incorrect</span>}
-                                                </div>
+                                                <span className="text-2xl font-black text-slate-500">{skippedCount}</span>
                                             </div>
                                         </div>
 
-                                        <div className="space-y-3 md:pl-14 mb-8">
-                                            {opts.map((opt, j) => {
-                                                const label = ['A','B','C','D','E'][j];
-                                                const isStudentChoice = studentAnswer === label || studentAnswer === opt;
-                                                const isTrueAnswer = q.correct_answer === label || q.correct_answer === opt;
-                                                
-                                                let style = isTrueAnswer ? "border-green-500 bg-green-50 dark:bg-green-900/20 ring-2 ring-green-500/20 opacity-100" 
-                                                          : isStudentChoice ? "border-red-400 bg-red-50 dark:bg-red-900/20 opacity-100" 
-                                                          : "border-slate-100 dark:border-slate-800 opacity-60";
-                                                
-                                                return (
-                                                    <div key={j} className={`p-4 rounded-2xl border-2 flex items-start gap-3 transition-all ${style}`}>
-                                                        <div className="shrink-0 w-6 mt-0.5">{isTrueAnswer ? <CheckCircle className="text-green-600" size={20} /> : isStudentChoice ? <XCircle className="text-red-500" size={20} /> : <div className="w-2 h-2 rounded-full bg-slate-300 mt-2" />}</div>
-                                                        <span className={`text-sm md:text-base font-medium ${isTrueAnswer ? 'text-green-900 dark:text-green-100 font-bold' : 'text-slate-500 dark:text-slate-400'}`}>{opt}</span>
-                                                        {isStudentChoice && <span className="ml-auto text-[10px] font-black uppercase text-slate-400 px-2 py-1 bg-white dark:bg-slate-900 rounded-md border border-slate-100 dark:border-slate-800">Your Answer</span>}
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
+                                        {/* 📝 QUESTIONS LOOP */}
+                                        {evaluatedQuestions.map((q, i) => {
+                                            let opts = [];
+                                            try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch (e) { opts = []; }
 
-                                        {q.rationale && (
-                                            <div className="md:pl-14">
-                                                <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
-                                                    <h4 className="text-[11px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><Info size={14} /> Clinical Review & Rationale</h4>
-                                                    <div className="space-y-4">
-                                                        {(() => {
-                                                            try {
-                                                                const r = typeof q.rationale === 'string' ? JSON.parse(q.rationale) : q.rationale;
-                                                                return (
-                                                                    <>
-                                                                        {r.correct && <div><span className="text-[10px] font-bold text-green-600 uppercase block mb-1">Correct Answer Analysis</span><p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed font-medium">{r.correct}</p></div>}
-                                                                        {r.wrong && <div className="pt-3 border-t border-slate-200 dark:border-slate-800"><span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Differential Considerations</span><p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed italic">{r.wrong}</p></div>}
-                                                                    </>
-                                                                );
-                                                            } catch (e) { return <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{q.rationale}</p>; }
-                                                        })()}
+                                            return (
+                                                <div key={q.question_id} className={`bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[32px] border-2 shadow-sm ${q.isSkipped ? 'border-slate-200 dark:border-slate-800' : q.isCorrect ? 'border-green-200 dark:border-green-900/50' : 'border-red-200 dark:border-red-900/50'}`}>
+                                                    <div className="flex gap-4 mb-6">
+                                                        <span className={`shrink-0 w-10 h-10 rounded-2xl flex items-center justify-center font-black text-lg ${q.isSkipped ? 'bg-slate-100 text-slate-500 dark:bg-slate-800' : q.isCorrect ? 'bg-green-100 text-green-600 dark:bg-green-900/50' : 'bg-red-100 text-red-600 dark:bg-red-900/50'}`}>{i + 1}</span>
+                                                        <div className="flex-1 pt-1.5">
+                                                            <h3 className="font-bold text-lg md:text-xl text-slate-800 dark:text-white leading-relaxed">{q.question_text}</h3>
+                                                            <div className="mt-2 flex items-center gap-2">
+                                                                {q.isSkipped ? <span className="text-[10px] font-black text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded uppercase tracking-widest">Not Answered</span>
+                                                                : q.isCorrect ? <span className="text-[10px] font-black text-green-600 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded uppercase tracking-widest">Correct</span>
+                                                                : <span className="text-[10px] font-black text-red-500 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded uppercase tracking-widest">Incorrect</span>}
+                                                            </div>
+                                                        </div>
                                                     </div>
+
+                                                    <div className="space-y-3 md:pl-14 mb-8">
+                                                        {opts.map((opt, j) => {
+                                                            const label = ['A','B','C','D','E'][j];
+                                                            const sAns = String(q.studentAnswer || '').trim().toUpperCase();
+                                                            const cAns = String(q.correct_answer || '').trim().toUpperCase();
+                                                            const optText = String(opt || '').trim().toUpperCase();
+                                                            
+                                                            const isStudentChoice = sAns === label || sAns === optText;
+                                                            const isTrueAnswer = cAns === label || cAns === optText;
+                                                            
+                                                            let style = isTrueAnswer ? "border-green-500 bg-green-50 dark:bg-green-900/20 ring-2 ring-green-500/20 opacity-100" 
+                                                                      : isStudentChoice ? "border-red-400 bg-red-50 dark:bg-red-900/20 opacity-100" 
+                                                                      : "border-slate-100 dark:border-slate-800 opacity-60";
+                                                            
+                                                            return (
+                                                                <div key={j} className={`p-4 rounded-2xl border-2 flex items-start gap-3 transition-all ${style}`}>
+                                                                    <div className="shrink-0 w-6 mt-0.5">{isTrueAnswer ? <CheckCircle className="text-green-600" size={20} /> : isStudentChoice ? <XCircle className="text-red-500" size={20} /> : <div className="w-2 h-2 rounded-full bg-slate-300 mt-2" />}</div>
+                                                                    <span className={`text-sm md:text-base font-medium ${isTrueAnswer ? 'text-green-900 dark:text-green-100 font-bold' : 'text-slate-500 dark:text-slate-400'}`}>{opt}</span>
+                                                                    {isStudentChoice && <span className="ml-auto text-[10px] font-black uppercase text-slate-400 px-2 py-1 bg-white dark:bg-slate-900 rounded-md border border-slate-100 dark:border-slate-800">Your Answer</span>}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+
+                                                    {q.rationale && (
+                                                        <div className="md:pl-14">
+                                                            <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                                                                <h4 className="text-[11px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2"><Info size={14} /> Clinical Review & Rationale</h4>
+                                                                <div className="space-y-4">
+                                                                    {(() => {
+                                                                        try {
+                                                                            const r = typeof q.rationale === 'string' ? JSON.parse(q.rationale) : q.rationale;
+                                                                            return (
+                                                                                <>
+                                                                                    {r.correct && <div><span className="text-[10px] font-bold text-green-600 uppercase block mb-1">Correct Answer Analysis</span><p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed font-medium">{r.correct}</p></div>}
+                                                                                    {r.wrong && <div className="pt-3 border-t border-slate-200 dark:border-slate-800"><span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Differential Considerations</span><p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed italic">{r.wrong}</p></div>}
+                                                                                </>
+                                                                            );
+                                                                        } catch (e) { return <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{q.rationale}</p>; }
+                                                                    })()}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            </div>
-                                        )}
-                                    </div>
+                                            );
+                                        })}
+                                    </>
                                 );
-                            })}
+                            })()}
                         </div>
                     </div>
                 </div>
