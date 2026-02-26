@@ -49,29 +49,18 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
     }, {});
 
     const handleOpenReview = (examData) => {
-        const decryptedExam = JSON.parse(JSON.stringify(examData));
-        decryptedExam.exam_master.questions = decryptedExam.exam_master.questions.map(q => {
-            let plainText = q.question_text;
-            try { plainText = decryptAES256(q.question_text); } catch (e) {}
-            let plainAnswer = q.correct_answer;
-            try { plainAnswer = decryptAES256(q.correct_answer); } catch (e) {}
-            let plainOptions = q.options;
-            if (q.options?.cipher) {
-                try { plainOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch (e) {}
-            }
-            let plainExplanations = q.explanations || q.rationale; 
-            if (q.explanations?.cipher) {
-                try { plainExplanations = JSON.parse(decryptAES256(q.explanations.cipher)); } catch (e) {}
-            }
-            return { 
-                ...q, 
-                question_text: plainText, 
-                correct_answer: plainAnswer, 
-                options: plainOptions,
-                rationale: plainExplanations 
-            };
-        });
-        setReviewExam(decryptedExam);
+        // Data is ALREADY decrypted by App.jsx, just parse answers if needed
+        let parsedAnswers = examData.answers;
+        if (typeof parsedAnswers === 'string') {
+            try { parsedAnswers = JSON.parse(parsedAnswers); } catch(e) {}
+        }
+
+        const reviewPayload = {
+            ...examData,
+            answers: parsedAnswers || {}
+        };
+        
+        setReviewExam(reviewPayload);
     };
 
     return (
