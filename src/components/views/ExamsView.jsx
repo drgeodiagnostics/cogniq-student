@@ -12,55 +12,44 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
     const [collapsedActive, setCollapsedActive] = useState({});
     const [collapsedPast, setCollapsedPast] = useState({});
     const [reviewExam, setReviewExam] = useState(null);
-    const [isSyncing, setIsSyncing] = useState(false); // 🚀 NEW: Sync state
+    const [isSyncing, setIsSyncing] = useState(false);
 
     const toggleActive = (className) => setCollapsedActive(prev => ({ ...prev, [className]: !prev[className] }));
     const togglePast = (className) => setCollapsedPast(prev => ({ ...prev, [className]: !prev[className] }));
 
-    // --- 🚀 NEW: MANUAL SYNC HANDLER ---
     const handleManualSync = async () => {
         if (isSyncing) return;
         setIsSyncing(true);
-        
-        // Triggers the parent's fetch function (passed via props)
-        if (onRefresh) {
-            await onRefresh();
-        }
-        
-        // Premium feel delay
+        if (onRefresh) await onRefresh();
         setTimeout(() => setIsSyncing(false), 800);
     };
 
-    // --- 🧩 THE GROUPING ENGINE ---
-    const groupedAvailable = availableExams.reduce((acc, d) => {
-        const cName = d.classroom?.name || 'Direct Assessments';
+    const groupedAvailable = (availableExams || []).reduce((acc, d) => {
+        const cName = d?.classroom?.name || 'Direct Assessments';
         if (!acc[cName]) acc[cName] = [];
         acc[cName].push(d);
         return acc;
     }, {});
 
-    const completedPastExams = pastExams.filter(e => e.status !== 'in_progress');
+    const completedPastExams = (pastExams || []).filter(e => e?.status !== 'in_progress');
 
     const groupedPast = completedPastExams.reduce((acc, e) => {
-        const cName = e.exam_master?.classroom_master?.name || 'Recent Results';
+        const cName = e?.exam_master?.classroom_master?.name || 'Recent Results';
         if (!acc[cName]) acc[cName] = [];
         acc[cName].push(e);
         return acc;
     }, {});
 
     const handleOpenReview = (examData) => {
-        // Data is ALREADY decrypted by App.jsx, just parse answers if needed
-        let parsedAnswers = examData.answers;
+        let parsedAnswers = examData?.answers;
         if (typeof parsedAnswers === 'string') {
-            try { parsedAnswers = JSON.parse(parsedAnswers); } catch(e) {}
+            try { parsedAnswers = JSON.parse(parsedAnswers); } catch(e) { parsedAnswers = {}; }
         }
 
-        const reviewPayload = {
+        setReviewExam({
             ...examData,
             answers: parsedAnswers || {}
-        };
-        
-        setReviewExam(reviewPayload);
+        });
     };
 
     return (
@@ -71,7 +60,6 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                     <h1 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tight">Assessments</h1>
                     <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">Manage your active exams and review past performance.</p>
                 </div>
-                {/* 🚀 NEW: SYNC BUTTON */}
                 <button 
                     onClick={handleManualSync}
                     disabled={isSyncing}
@@ -122,7 +110,7 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                                     <div className="space-y-4 animate-in slide-in-from-top-2">
                                         {exams.map(d => {
                                             const scheduledTime = new Date(d.scheduled_at);
-                                            const isLive = d.status.toLowerCase() === 'live' || d.status.toLowerCase() === 'active' || now >= scheduledTime;
+                                            const isLive = d?.status?.toLowerCase() === 'live' || d?.status?.toLowerCase() === 'active' || now >= scheduledTime;
 
                                             const cloudStarted = pastExams.some(sub => sub.exam_id === d.exam_id && sub.status === 'in_progress');
                                             const localBufferKey = `exam_offline_buffer_${d.deployment_id}_${studentId}`;
@@ -144,7 +132,7 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                                                         </div>
                                                         <div className="flex flex-wrap items-center gap-3 mt-3">
                                                             <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest flex items-center gap-1">
-                                                                <Clock size={12}/> {d.duration_minutes} mins
+                                                                <Clock size={12}/> {d.duration_minutes || 0} mins
                                                             </span>
                                                             <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest">
                                                                 Opens: {scheduledTime.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
@@ -209,7 +197,7 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                                             {e.status === 'published' ? (
                                                 <div className="flex items-center gap-6 w-full md:w-auto shrink-0 justify-between md:justify-end">
                                                     <div className="text-right">
-                                                        <span className="text-2xl font-black text-green-600 dark:text-green-500 leading-none block">{e.score} <span className="text-sm text-slate-400">/ {e.total_marks}</span></span>
+                                                        <span className="text-2xl font-black text-green-600 dark:text-green-500 leading-none block">{e.score || 0} <span className="text-sm text-slate-400">/ {e.total_marks || 0}</span></span>
                                                         <span className="text-[9px] font-black text-green-700 dark:text-green-400 uppercase tracking-widest block mt-1">Published</span>
                                                     </div>
                                                     <button onClick={() => handleOpenReview(e)} className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400 px-5 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all">
@@ -232,13 +220,13 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                 </div>
             </div>
 
-            {/* --- REVIEW MODAL --- */}
+            {/* --- SAFE REVIEW MODAL --- */}
             {reviewExam && (
                 <div className="fixed inset-0 bg-slate-50 dark:bg-[#0b0f19] z-[100] flex flex-col animate-in fade-in zoom-in-95 duration-200">
                     <div className="h-20 px-6 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-white dark:bg-slate-900 shadow-sm z-10 shrink-0">
                         <div>
                             <h3 className="font-black text-slate-800 dark:text-white flex items-center gap-3 text-xl"><FileSearch className="text-indigo-500" size={24} /> Performance Review</h3>
-                            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{reviewExam.exam_master?.title}</p>
+                            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">{reviewExam?.exam_master?.title || 'Archived Assessment'}</p>
                         </div>
                         <button onClick={() => setReviewExam(null)} className="p-3 bg-slate-100 dark:bg-slate-800 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-2xl transition-all text-slate-500"><X size={24} /></button>
                     </div>
@@ -246,13 +234,27 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                     <div className="flex-1 overflow-y-auto p-4 md:p-8">
                         <div className="max-w-4xl mx-auto space-y-6 pb-20">
                             {(() => {
-                                // 1. 🚀 ROBUST EVALUATION ENGINE
-                                const total = reviewExam.exam_master.questions.length;
+                                // 🛡️ EXTRACT QUESTIONS SAFELY
+                                const questionsList = reviewExam?.exam_master?.questions || [];
+                                const total = questionsList.length;
+
+                                // ⚠️ FALLBACK UI: If old exam has no questions attached
+                                if (total === 0) {
+                                    return (
+                                        <div className="text-center p-12 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-200 dark:border-slate-800 shadow-sm mt-10">
+                                            <Info className="mx-auto text-indigo-400 mb-4" size={40} />
+                                            <h3 className="text-xl font-black text-slate-700 dark:text-slate-300 uppercase tracking-widest">Review Unavailable</h3>
+                                            <p className="text-slate-500 mt-3 font-medium text-sm">Detailed question data is no longer available for this archived exam. Your final score was recorded successfully.</p>
+                                        </div>
+                                    );
+                                }
+
+                                // 🚀 ROBUST EVALUATION ENGINE
                                 let correctCount = 0;
                                 let skippedCount = 0;
 
-                                const evaluatedQuestions = reviewExam.exam_master.questions.map(q => {
-                                    const studentAnswer = reviewExam.answers[q.question_id];
+                                const evaluatedQuestions = questionsList.map(q => {
+                                    const studentAnswer = reviewExam?.answers?.[q.question_id];
                                     let isSkipped = !studentAnswer;
                                     let isCorrect = false;
 
@@ -260,13 +262,11 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                                         let sAns = String(studentAnswer).trim().toUpperCase();
                                         let cAns = String(q.correct_answer || '').trim().toUpperCase();
                                         
-                                        // Direct match check
                                         if (sAns === cAns) {
                                             isCorrect = true;
                                         } else {
-                                            // Cross-reference letter vs text match
                                             let opts = [];
-                                            try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch(e) {}
+                                            try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch(e) { opts = []; }
                                             
                                             for (let j = 0; j < opts.length; j++) {
                                                 const label = ['A','B','C','D','E'][j];
@@ -311,11 +311,11 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                                             try { opts = Array.isArray(q.options) ? q.options : JSON.parse(q.options); } catch (e) { opts = []; }
 
                                             return (
-                                                <div key={q.question_id} className={`bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[32px] border-2 shadow-sm ${q.isSkipped ? 'border-slate-200 dark:border-slate-800' : q.isCorrect ? 'border-green-200 dark:border-green-900/50' : 'border-red-200 dark:border-red-900/50'}`}>
+                                                <div key={q.question_id || i} className={`bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[32px] border-2 shadow-sm ${q.isSkipped ? 'border-slate-200 dark:border-slate-800' : q.isCorrect ? 'border-green-200 dark:border-green-900/50' : 'border-red-200 dark:border-red-900/50'}`}>
                                                     <div className="flex gap-4 mb-6">
                                                         <span className={`shrink-0 w-10 h-10 rounded-2xl flex items-center justify-center font-black text-lg ${q.isSkipped ? 'bg-slate-100 text-slate-500 dark:bg-slate-800' : q.isCorrect ? 'bg-green-100 text-green-600 dark:bg-green-900/50' : 'bg-red-100 text-red-600 dark:bg-red-900/50'}`}>{i + 1}</span>
                                                         <div className="flex-1 pt-1.5">
-                                                            <h3 className="font-bold text-lg md:text-xl text-slate-800 dark:text-white leading-relaxed">{q.question_text}</h3>
+                                                            <h3 className="font-bold text-lg md:text-xl text-slate-800 dark:text-white leading-relaxed">{q.question_text || 'Question text not available'}</h3>
                                                             <div className="mt-2 flex items-center gap-2">
                                                                 {q.isSkipped ? <span className="text-[10px] font-black text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded uppercase tracking-widest">Not Answered</span>
                                                                 : q.isCorrect ? <span className="text-[10px] font-black text-green-600 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded uppercase tracking-widest">Correct</span>
@@ -362,7 +362,7 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
                                                                                     {r.wrong && <div className="pt-3 border-t border-slate-200 dark:border-slate-800"><span className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Differential Considerations</span><p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed italic">{r.wrong}</p></div>}
                                                                                 </>
                                                                             );
-                                                                        } catch (e) { return <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{q.rationale}</p>; }
+                                                                        } catch (e) { return <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{String(q.rationale)}</p>; }
                                                                     })()}
                                                                 </div>
                                                             </div>
