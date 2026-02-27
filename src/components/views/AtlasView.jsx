@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
-import InteractiveMindMap from '../layout/InteractiveMindMap'; // Or wherever your file is
+import InteractiveMindMap from '../layout/InteractiveMindMap'; 
 import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2 } from 'lucide-react';
 
-// 🚀 ADDED 'session' PROP to identify the student
 const AtlasView = ({ session }) => {
     const [activeTab, setActiveTab] = useState('flashcards');
     const [flashcards, setFlashcards] = useState([]);
@@ -12,25 +11,43 @@ const AtlasView = ({ session }) => {
     
     // 🛡️ PROGRESS TRACKING ENGINE
     const [flippedCards, setFlippedCards] = useState({}); 
-    const [reviewedCards, setReviewedCards] = useState(new Set()); // Start empty, hydrate from cloud
+    const [reviewedCards, setReviewedCards] = useState(new Set()); 
     const [expandedChapters, setExpandedChapters] = useState({});
 
+    // 1. DATA FETCHING ENGINE
     useEffect(() => {
         const fetchAtlasData = async () => {
             if (!session?.user?.id) return;
             setLoading(true);
             
             try {
-                // 1. Paginated Fetch for Flashcards
+                // 🚀 1. Fetch the Classrooms this student is currently enrolled in
+                const { data: enrollments } = await supabase
+                    .from('classroom_enrollments')
+                    .select('classroom_id')
+                    .eq('student_id', session.user.id);
+                
+                const myClassIds = (enrollments || []).map(e => e.classroom_id);
+
+                // If they are not enrolled in any class, they get no data.
+                if (myClassIds.length === 0) {
+                    setFlashcards([]);
+                    setMindmaps([]);
+                    setLoading(false);
+                    return;
+                }
+
                 let allCards = [];
                 let start = 0;
                 const step = 1000;
                 
+                // 🚀 2. Paginated Fetch for Flashcards (Filtered by Enrolled Classrooms)
                 while (true) {
                     const { data, error } = await supabase
                         .from('atlas_flashcards')
                         .select('*')
                         .eq('is_published', true)
+                        .overlaps('published_classrooms', myClassIds) // 👈 MAGIC HAPPENS HERE
                         .range(start, start + step - 1);
                     
                     if (error) throw error;
@@ -41,7 +58,7 @@ const AtlasView = ({ session }) => {
                     start += step; 
                 }
 
-                // 2. Paginated Fetch for Mind Maps
+                // 🚀 3. Paginated Fetch for Mind Maps (Filtered by Enrolled Classrooms)
                 let allMaps = [];
                 let mStart = 0;
                 
@@ -50,6 +67,7 @@ const AtlasView = ({ session }) => {
                         .from('atlas_mindmaps')
                         .select('*')
                         .eq('is_published', true)
+                        .overlaps('published_classrooms', myClassIds) // 👈 MAGIC HAPPENS HERE
                         .range(mStart, mStart + step - 1);
                     
                     if (error) throw error;
@@ -60,7 +78,7 @@ const AtlasView = ({ session }) => {
                     mStart += step;
                 }
 
-                // 🚀 3. FETCH CLOUD PROGRESS
+                // 4. FETCH CLOUD PROGRESS
                 const { data: progressData } = await supabase
                     .from('flashcard_progress')
                     .select('card_id')
@@ -83,21 +101,71 @@ const AtlasView = ({ session }) => {
         fetchAtlasData();
     }, [session]);
 
-    // 🚀 CLOUD SYNC: Handle Flip and save to Database
+    // 🚀 2. SILENT LOCAL STORAGE MIGRATION ENGINE
+    useEffect(() => {
+        const migrateLocalData = async () => {
+            // Only run if we have a user and flashcards are loaded
+            if (!session?.user?.id || flashcards.length === 0) return;
+            
+            const localSaved = localStorage.getItem('atlas_reviewed_cards');
+            if (!localSaved) return; // Nothing to migrate
+
+            try {
+                const localIds = JSON.parse(localSaved);
+                if (!Array.isArray(localIds) || localIds.length === 0) {
+                    localStorage.removeItem('atlas_reviewed_cards');
+                    return;
+                }
+
+                // Match local IDs to the downloaded flashcards to get their Chapter (deck_id)
+                const payload = localIds.map(id => {
+                    const card = flashcards.find(c => c.id === id);
+                    return {
+                        student_id: session.user.id,
+                        deck_id: card?.chapter || 'Uncategorized',
+                        card_id: id,
+                        status: 'reviewed',
+                        reviewed_at: new Date().toISOString() 
+                    };
+                });
+
+                // Bulk upsert to Supabase
+                const { error } = await supabase
+                    .from('flashcard_progress')
+                    .upsert(payload, { onConflict: 'student_id, deck_id, card_id' });
+
+                if (!error) {
+                    console.log(`Successfully migrated ${localIds.length} cards to the cloud.`);
+                    
+                    // Immediately update UI state so checks appear instantly
+                    setReviewedCards(prev => {
+                        const next = new Set(prev);
+                        localIds.forEach(id => next.add(id));
+                        return next;
+                    });
+
+                    // Wipe local storage so it relies entirely on the cloud from now on
+                    localStorage.removeItem('atlas_reviewed_cards');
+                }
+            } catch (err) {
+                console.error("Migration Error:", err);
+            }
+        };
+
+        migrateLocalData();
+    }, [flashcards, session]); 
+
+    // 3. CLOUD SYNC: Handle Flip and save to Database
     const toggleFlip = async (card) => {
-        // Toggle the visual flip animation instantly
         setFlippedCards(prev => ({ ...prev, [card.id]: !prev[card.id] }));
         
-        // If not already reviewed, mark it and sync to Supabase
         if (!reviewedCards.has(card.id)) {
-            // Optimistic UI update
             setReviewedCards(prev => new Set(prev).add(card.id));
 
-            // Background Cloud Sync
             try {
                 await supabase.from('flashcard_progress').upsert({
                     student_id: session.user.id,
-                    deck_id: card.chapter || 'Flashcards', // Group by chapter
+                    deck_id: card.chapter || 'Uncategorized', 
                     card_id: card.id,
                     status: 'reviewed',
                     reviewed_at: new Date().toISOString()
@@ -224,7 +292,6 @@ const AtlasView = ({ session }) => {
                                                         const isReviewed = reviewedCards.has(card.id);
 
                                                         return (
-                                                            // 🚀 UPDATED: Pass the whole card object instead of just the ID
                                                             <div key={card.id} onClick={() => toggleFlip(card)} className="cursor-pointer group perspective-1000 h-64 w-full">
                                                                 <div className={`relative w-full h-full transition-transform duration-500 transform-style-3d ${flippedCards[card.id] ? 'rotate-y-180' : ''}`}>
                                                                     
@@ -317,7 +384,6 @@ const AtlasView = ({ session }) => {
                                                         {/* Interactive Diagram */}
                                                         {map.map_data && (
                                                             <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-white dark:bg-slate-900 shadow-inner">
-                                                                {/* 🚀 ADDED STUDENT ID AND MAP ID PROPS */}
                                                                 <InteractiveMindMap 
                                                                     mapData={map.map_data} 
                                                                     studentId={session?.user?.id}
