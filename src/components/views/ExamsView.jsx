@@ -31,7 +31,9 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
         return acc;
     }, {});
 
-    const completedPastExams = (pastExams || []).filter(e => e?.status !== 'in_progress');
+    const completedPastExams = (pastExams || [])
+    .filter(e => e?.status !== 'in_progress')
+    .sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
 
     const groupedPast = completedPastExams.reduce((acc, e) => {
         const cName = e?.exam_master?.classroom_master?.name || 'Recent Results';

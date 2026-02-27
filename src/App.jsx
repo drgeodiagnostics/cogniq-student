@@ -147,7 +147,6 @@ function App() {
         
         // 🛡️ FAULT-TOLERANT SQB DECRYPTION ENGINE
         const decryptedSubmissions = (rawSubmissions || []).map(sub => {
-            // Create a deep copy to avoid mutating the original raw data
             let safeSub = JSON.parse(JSON.stringify(sub));
 
             if (safeSub.exam_master && safeSub.exam_master.questions) {
@@ -166,7 +165,6 @@ function App() {
                     if (typeof q.correct_answer === 'object' && q.correct_answer?.cipher) {
                          try { plainAnswer = decryptAES256(q.correct_answer.cipher); } catch(e) {}
                     } else if (typeof q.correct_answer === 'string' && q.correct_answer.length > 10) {
-                         // Attempt to decrypt if it looks like a raw cipher string
                          try { plainAnswer = decryptAES256(q.correct_answer); } catch(e) { plainAnswer = q.correct_answer; }
                     }
 
@@ -174,7 +172,6 @@ function App() {
                     if (typeof q.question_text === 'object' && q.question_text?.cipher) {
                         try { plainText = decryptAES256(q.question_text.cipher); } catch(e) {}
                     } else if (typeof q.question_text === 'string' && q.question_text.length > 50 && !q.question_text.includes(' ')) {
-                        // If it's a long continuous string without spaces, it's likely a raw cipher
                         try { plainText = decryptAES256(q.question_text); } catch(e) { plainText = q.question_text; }
                     }
 
@@ -193,10 +190,10 @@ function App() {
         const completedExamIds = new Set(decryptedSubmissions.filter(s => s.status === 'published' || s.status === 'pending').map(s => s.exam_id));
         
         const { data: deployments } = await supabase.from('exam_deployments')
-            .select(`deployment_id, scheduled_at, duration_minutes, status, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
-            .in('classroom_id', classIds)
-            .in('status', ['scheduled', 'live', 'LIVE', 'DEPLOYED', 'deployed']) 
-            .order('scheduled_at', { ascending: true });
+    .select(`deployment_id, scheduled_at, duration_minutes, status, exam:exam_master(exam_id, title, total_marks, auto_publish_results), classroom:classroom_master(name)`)
+    .in('classroom_id', classIds)
+    .in('status', ['scheduled', 'live', 'LIVE', 'DEPLOYED', 'deployed']) 
+    .order('scheduled_at', { ascending: true });
         
         const availableExams = (deployments || []).filter(d => d.exam && !completedExamIds.has(d.exam.exam_id));
 
@@ -230,7 +227,6 @@ function App() {
 
           if (error) throw new Error("RLS Block: " + error.message);
           
-          // Note: Decryption now happens inside ActiveExamInterface for maximum security
           setCurrentExam({ 
               ...deployment.exam, 
               deployment_id: deployment.deployment_id,
@@ -261,33 +257,39 @@ function App() {
       return tiers[currentTier] >= tiers[requiredTier];
   };
 
+  // 👇 DIAGNOSTIC LOG (SAFE)
+  console.log("🔍 MY EXAM DATA STATE:", dashboardData.pastExams);
+
   // --- RENDER PIPELINE ---
   if (!session) return <LoginScreen />;
   if (loading || !profile) return <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
   if (deviceStatus !== 'approved') return <DeviceGuard status={deviceStatus} sessionUser={session.user} onRefresh={() => checkDeviceStatus(session.user.id)} strictMode={STRICT_DEVICE_MODE} />;
 
   if (view === 'taking_exam') {
-    return <ActiveExamInterface 
-        exam={currentExam} 
-        questions={examQuestions} 
-        studentId={session.user.id} 
-        isPWA={isPWA}
-        onComplete={(score, total, answers) => { 
-            supabase.from('exam_submissions').update({ 
-                score, 
-                total_marks: total, 
-                status: 'pending', 
-                answers
-            })
-            .eq('exam_id', currentExam.exam_id)
-            .eq('student_id', session.user.id)
-            .then(() => {
-                setCurrentExam(null); setExamQuestions([]);
-                alert("Submission Successful! Results pending release.");
-                fetchDashboardData(); setView('dashboard'); 
-            });
-        }} 
-    />;
+    <ActiveExamInterface 
+    exam={currentExam} 
+    questions={examQuestions} 
+    studentId={session.user.id} 
+    isPWA={isPWA}
+    onComplete={(score, total, answers) => { 
+        // 🚀 CHECK THE AUTO-PUBLISH FLAG
+        const finalStatus = currentExam.auto_publish_results ? 'published' : 'pending';
+
+        supabase.from('exam_submissions').update({ 
+            score, 
+            total_marks: total, 
+            status: finalStatus, // <-- Use the dynamic status
+            answers
+        })
+        .eq('exam_id', currentExam.exam_id)
+        .eq('student_id', session.user.id)
+        .then(() => {
+            setCurrentExam(null); setExamQuestions([]);
+            alert(finalStatus === 'published' ? "Submission Successful! Results are available." : "Submission Successful! Results pending release.");
+            fetchDashboardData(); setView('dashboard'); 
+        });
+    }} 
+/>;
   }
 
   const userProfileData = { 
@@ -306,14 +308,13 @@ function App() {
         onUpdatePassword={handleUpdatePassword}
     >
        {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData()} />}
-       {/* 🚀 THE FIX: Passing studentId here enables the "Continue Exam" logic */}
        {view === 'exams' && (
   <ExamsView 
     availableExams={dashboardData.availableExams} 
     pastExams={dashboardData.pastExams} 
     onStart={startExam} 
     studentId={session.user.id} 
-    onRefresh={() => fetchDashboardData(session.user.id, true)} // 👈 Add this
+    onRefresh={() => fetchDashboardData(session.user.id, true)}
   />
 )}
        {view === 'profile' && <ProfileView profile={profile} onUpdatePassword={handleUpdatePassword} />}
