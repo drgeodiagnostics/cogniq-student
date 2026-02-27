@@ -2,17 +2,16 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { ReactFlow, Background, Controls, Handle, Position, applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { hierarchy, tree } from 'd3-hierarchy';
-import { Info, ZoomIn, X, ChevronDown, ChevronUp, Plus, Minus } from 'lucide-react';
+import { Info, ZoomIn, X, ChevronDown, ChevronUp, Plus, Minus, CheckCircle2 } from 'lucide-react';
+import { supabase } from '../../supabaseClient'; // 🚀 Added Supabase import
 
-// --- THE D3 TO REACT-FLOW LAYOUT ENGINE (With Collapse/Expand Logic) ---
-const getLayoutedElements = (rawData, expandedIds, onToggleNode) => {
+// --- THE D3 TO REACT-FLOW LAYOUT ENGINE ---
+const getLayoutedElements = (rawData, expandedIds, onToggleNode, reviewedNodes) => {
     if (!rawData) return { initialNodes: [], initialEdges: [] };
 
     try {
-        // Deep copy to prevent permanently deleting children in memory
         const dataCopy = JSON.parse(JSON.stringify(rawData));
         
-        // Ensure every node has an ID
         let idCounter = 0;
         const assignIds = (n) => {
             if (!n.id) n.id = `auto-node-${idCounter++}`;
@@ -22,16 +21,13 @@ const getLayoutedElements = (rawData, expandedIds, onToggleNode) => {
 
         const root = hierarchy(dataCopy);
 
-        // 🚀 THE MAGIC: Collapse everything UNLESS it is explicitly in the expandedIds list
         root.each(node => {
             node.data.hasChildren = !!(node.children && node.children.length > 0);
-            
-            // Node is collapsed if it HAS children and its ID is NOT in expandedIds
             node.data.isCollapsed = node.data.hasChildren && !expandedIds.has(String(node.data.id));
 
             if (node.data.isCollapsed && node.children) {
                 node._children = node.children;
-                node.children = null; // Hides it from D3 Layout Engine
+                node.children = null; 
             }
         });
 
@@ -46,6 +42,7 @@ const getLayoutedElements = (rawData, expandedIds, onToggleNode) => {
                 id: String(node.data.id),
                 position: { x: node.y, y: node.x },
                 data: { 
+                    id: String(node.data.id), // Passed ID into data for the sidebar
                     label: node.data.text || node.data.label || 'Concept',
                     note: node.data.note,
                     image: node.data.image,
@@ -53,6 +50,7 @@ const getLayoutedElements = (rawData, expandedIds, onToggleNode) => {
                     level: node.data.level,
                     hasChildren: node.data.hasChildren,
                     isCollapsed: node.data.isCollapsed,
+                    isReviewed: reviewedNodes.has(String(node.data.id)), // 🚀 Pass Review Status
                     onToggle: () => onToggleNode(node.data.id) 
                 },
                 type: 'customNode',
@@ -77,7 +75,7 @@ const getLayoutedElements = (rawData, expandedIds, onToggleNode) => {
     }
 };
 
-// --- CUSTOM NODE STYLING (With Toggle Badge) ---
+// --- CUSTOM NODE STYLING ---
 const CustomNode = ({ data }) => {
     let bgClass = 'bg-white dark:bg-slate-800';
     let textClass = 'text-slate-700 dark:text-slate-200';
@@ -100,15 +98,22 @@ const CustomNode = ({ data }) => {
 
     return (
         <div className={`relative px-4 py-2 rounded-xl shadow-sm transition-transform hover:scale-105 hover:shadow-md min-w-[150px] text-center ${bgClass} ${textClass} ${borderClass}`}>
+            
+            {/* 🚀 VISUAL MASTERY BADGE */}
+            {data.isReviewed && (
+                <div className="absolute -top-2 -left-2 bg-green-500 text-white rounded-full p-0.5 shadow-sm border-2 border-white dark:border-slate-900 z-20">
+                    <CheckCircle2 size={12} strokeWidth={3} />
+                </div>
+            )}
+
             {data.level !== 1 && <Handle type="target" position={Position.Left} className="opacity-0" />}
             
             <div className="font-bold text-sm">{data.label}</div>
             
-            {/* 🚀 EXPAND / COLLAPSE BUTTON */}
             {data.hasChildren && (
                 <button 
                     onClick={(e) => {
-                        e.stopPropagation(); // Prevents opening the Knowledge Hub sidebar
+                        e.stopPropagation(); 
                         data.onToggle();
                     }}
                     className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-full flex items-center justify-center text-slate-500 dark:text-slate-400 shadow-md hover:bg-indigo-50 hover:text-indigo-600 hover:scale-110 hover:border-indigo-200 transition-all z-10"
@@ -124,9 +129,8 @@ const CustomNode = ({ data }) => {
 };
 
 // --- MAIN COMPONENT ---
-export default function InteractiveMindMap({ mapData }) {
+export default function InteractiveMindMap({ mapData, studentId, mapId }) {
     
-    // 1. Data Sanitization & Stable ID Assignment
     const activeData = useMemo(() => {
         const raw = mapData || fallbackData;
         try {
@@ -139,19 +143,53 @@ export default function InteractiveMindMap({ mapData }) {
                 if (node.children) node.children.forEach(assignStableIds);
             };
             assignStableIds(parsed);
-
             return parsed;
         } catch {
             return fallbackData;
         }
     }, [mapData]);
 
-    // 2. Track EXPANDED nodes
     const [expandedIds, setExpandedIds] = useState(new Set());
+    const [reviewedNodes, setReviewedNodes] = useState(new Set()); // 🚀 NEW: Progress Tracking State
     const [nodes, setNodes] = useState([]);
     const [edges, setEdges] = useState([]);
+    const [activeNode, setActiveNode] = useState(null); 
+    const [isMinimized, setIsMinimized] = useState(false);
 
-    // 3. Auto-Expand the Root Node when a new map loads
+    // 🚀 NEW: Fetch Progress from Supabase
+    useEffect(() => {
+        if (!studentId || !mapId) return;
+        const fetchProgress = async () => {
+            const { data } = await supabase
+                .from('flashcard_progress')
+                .select('card_id')
+                .eq('student_id', studentId)
+                .eq('deck_id', mapId);
+            
+            if (data) {
+                setReviewedNodes(new Set(data.map(d => d.card_id)));
+            }
+        };
+        fetchProgress();
+    }, [studentId, mapId]);
+
+    // 🚀 NEW: Handle Marking a Node as Reviewed
+    const handleMarkReviewed = async (nodeId) => {
+        if (!studentId || !mapId || !nodeId) return;
+
+        // Optimistic UI Update
+        setReviewedNodes(prev => new Set(prev).add(nodeId));
+
+        // Background Sync
+        await supabase.from('flashcard_progress').upsert({
+            student_id: studentId,
+            deck_id: mapId,
+            card_id: nodeId,
+            status: 'reviewed',
+            reviewed_at: new Date().toISOString()
+        }, { onConflict: 'student_id, deck_id, card_id' });
+    };
+
     useEffect(() => {
         if (activeData && activeData.id) {
             setExpandedIds(new Set([String(activeData.id)]));
@@ -169,19 +207,15 @@ export default function InteractiveMindMap({ mapData }) {
         });
     }, []);
 
-    // 4. Recalculate layout whenever data OR expanded states change
+    // 🚀 Pass reviewedNodes to layout engine
     useEffect(() => {
         if (!activeData) return;
-        const { initialNodes, initialEdges } = getLayoutedElements(activeData, expandedIds, toggleNode);
+        const { initialNodes, initialEdges } = getLayoutedElements(activeData, expandedIds, toggleNode, reviewedNodes);
         setNodes(initialNodes);
         setEdges(initialEdges);
-    }, [activeData, expandedIds, toggleNode]);
+    }, [activeData, expandedIds, toggleNode, reviewedNodes]);
 
     const nodeTypes = useMemo(() => ({ customNode: CustomNode, default: CustomNode }), []);
-
-    const [activeNode, setActiveNode] = useState(null); 
-    const [isMinimized, setIsMinimized] = useState(false); 
-
     const onNodesChange = useCallback((changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
     const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
 
@@ -190,19 +224,9 @@ export default function InteractiveMindMap({ mapData }) {
         setIsMinimized(false); 
     };
 
-    const onPaneClick = () => {
-        setActiveNode(null); 
-    };
-
     return (
         <div className="w-full h-[70vh] bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden relative shadow-inner">
-            
-            {/* 🚀 THE MAGIC CSS: This makes the nodes physically glide when expanding/collapsing */}
-            <style>{`
-                .react-flow__node {
-                    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-                }
-            `}</style>
+            <style>{`.react-flow__node { transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); }`}</style>
 
             <ReactFlow 
                 nodes={nodes} 
@@ -211,7 +235,7 @@ export default function InteractiveMindMap({ mapData }) {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
-                onPaneClick={onPaneClick} 
+                onPaneClick={() => setActiveNode(null)} 
                 fitView
                 fitViewOptions={{ padding: 0.2 }}
                 minZoom={0.2}
@@ -231,42 +255,56 @@ export default function InteractiveMindMap({ mapData }) {
                     
                     <div 
                         onClick={() => setIsMinimized(!isMinimized)}
-                        className="bg-slate-100 dark:bg-slate-800 p-3 flex justify-between items-center border-b border-slate-200 dark:border-slate-700 cursor-pointer select-none group"
+                        className="bg-slate-100 dark:bg-slate-800 p-3 flex justify-between items-center border-b border-slate-200 dark:border-slate-700 cursor-pointer select-none group shrink-0"
                     >
                         <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest flex items-center gap-2">
                             <Info size={14}/> Knowledge Hub
                         </span>
                         
                         <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition-opacity">
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); setIsMinimized(!isMinimized); }} 
-                                className="p-1 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-                            >
+                            <button onClick={(e) => { e.stopPropagation(); setIsMinimized(!isMinimized); }} className="p-1 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
                                 {isMinimized ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
                             </button>
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); setActiveNode(null); }} 
-                                className="p-1 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-                            >
+                            <button onClick={(e) => { e.stopPropagation(); setActiveNode(null); }} className="p-1 text-slate-500 hover:text-red-600 dark:hover:text-red-400 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors">
                                 <X size={16} />
                             </button>
                         </div>
                     </div>
 
                     {!isMinimized && (
-                        <div className="p-5 overflow-y-auto">
-                            <h3 className="text-lg font-bold text-slate-800 dark:text-white mb-2">{activeNode.label || activeNode.text}</h3>
-                            {activeNode.note && <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-4">{activeNode.note}</p>}
-                            
-                            {activeNode.image && (
-                                <div className="mt-4">
-                                    <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-50 relative group cursor-pointer">
-                                        <img src={activeNode.image} alt="Node reference" className="w-full h-auto" />
-                                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                            <ZoomIn className="text-white" size={24} />
+                        <div className="p-5 overflow-y-auto flex-1 flex flex-col">
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800 dark:text-white mb-2">{activeNode.label || activeNode.text}</h3>
+                                {activeNode.note && <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed mb-4">{activeNode.note}</p>}
+                                
+                                {activeNode.image && (
+                                    <div className="mt-4">
+                                        <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-50 relative group cursor-pointer">
+                                            <img src={activeNode.image} alt="Node reference" className="w-full h-auto" />
+                                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                <ZoomIn className="text-white" size={24} />
+                                            </div>
                                         </div>
+                                        {activeNode.caption && <p className="text-[10px] text-slate-500 italic text-center mt-2">{activeNode.caption}</p>}
                                     </div>
-                                    {activeNode.caption && <p className="text-[10px] text-slate-500 italic text-center mt-2">{activeNode.caption}</p>}
+                                )}
+                            </div>
+
+                            {/* 🚀 NEW: MARK AS UNDERSTOOD BUTTON */}
+                            {studentId && mapId && (
+                                <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700 shrink-0">
+                                    <button
+                                        onClick={() => handleMarkReviewed(activeNode.id)}
+                                        disabled={activeNode.isReviewed}
+                                        className={`w-full py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition-all ${
+                                            activeNode.isReviewed
+                                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 cursor-not-allowed'
+                                                : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-500/20 active:scale-95'
+                                        }`}
+                                    >
+                                        <CheckCircle2 size={18} />
+                                        {activeNode.isReviewed ? 'Mastered' : 'Mark as Understood'}
+                                    </button>
                                 </div>
                             )}
                         </div>
@@ -283,27 +321,5 @@ const fallbackData = {
     "text": "Introduction to Pathology",
     "level": 1,
     "note": "Pathology is the scientific study of changes in the structure and function of the body in disease.",
-    "children": [
-      {
-        "id": "node-1",
-        "text": "Definition & Scope",
-        "level": 2,
-        "note": "Pathology provides the final diagnosis which is crucial for patient management.",
-        "children": [
-          { "id": "node-6", "text": "Etymology", "level": 3, "note": "Derived from Greek: 'Pathos' = Suffering, 'Logos' = Study." },
-          { "id": "node-9", "text": "Pathophysiology", "level": 3, "note": "Study of disordered function." }
-        ]
-      },
-      {
-        "id": "node-2",
-        "text": "Core Components",
-        "level": 2,
-        "note": "The four pillars of pathology.",
-        "children": [
-          { "id": "node-10", "text": "Etiology (Why?)", "level": 3, "note": "The causal factors responsible for lesions." },
-          { "id": "node-11", "text": "Pathogenesis (How?)", "level": 3, "note": "The mechanism by which the lesions are produced." },
-          { "id": "node-12", "text": "Morphology (What?)", "level": 3, "note": "Structural changes (Lesions)." }
-        ]
-      }
-    ]
+    "children": []
 };

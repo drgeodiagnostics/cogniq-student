@@ -1,28 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
-import InteractiveMindMap from '../layout/InteractiveMindMap';
+import InteractiveMindMap from '../layout/InteractiveMindMap'; // Or wherever your file is
 import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2 } from 'lucide-react';
 
-const AtlasView = () => {
+// 🚀 ADDED 'session' PROP to identify the student
+const AtlasView = ({ session }) => {
     const [activeTab, setActiveTab] = useState('flashcards');
     const [flashcards, setFlashcards] = useState([]);
     const [mindmaps, setMindmaps] = useState([]);
     const [loading, setLoading] = useState(true);
     
     // 🛡️ PROGRESS TRACKING ENGINE
-    const [flippedCards, setFlippedCards] = useState({}); // Tracks what is currently flipped
-    const [reviewedCards, setReviewedCards] = useState(() => {
-        // Hydrate reviewed status from device memory
-        const saved = localStorage.getItem('atlas_reviewed_cards');
-        return saved ? new Set(JSON.parse(saved)) : new Set();
-    });
-    
+    const [flippedCards, setFlippedCards] = useState({}); 
+    const [reviewedCards, setReviewedCards] = useState(new Set()); // Start empty, hydrate from cloud
     const [expandedChapters, setExpandedChapters] = useState({});
 
-    // --- 🚀 INFINITE PAGINATION FETCH ENGINE ---
     useEffect(() => {
         const fetchAtlasData = async () => {
+            if (!session?.user?.id) return;
             setLoading(true);
+            
             try {
                 // 1. Paginated Fetch for Flashcards
                 let allCards = [];
@@ -40,8 +37,8 @@ const AtlasView = () => {
                     if (!data || data.length === 0) break;
                     
                     allCards = [...allCards, ...data];
-                    if (data.length < step) break; // End of data
-                    start += step; // Fetch next batch
+                    if (data.length < step) break; 
+                    start += step; 
                 }
 
                 // 2. Paginated Fetch for Mind Maps
@@ -63,6 +60,16 @@ const AtlasView = () => {
                     mStart += step;
                 }
 
+                // 🚀 3. FETCH CLOUD PROGRESS
+                const { data: progressData } = await supabase
+                    .from('flashcard_progress')
+                    .select('card_id')
+                    .eq('student_id', session.user.id);
+
+                if (progressData) {
+                    setReviewedCards(new Set(progressData.map(p => p.card_id)));
+                }
+
                 setFlashcards(allCards);
                 setMindmaps(allMaps);
 
@@ -74,22 +81,31 @@ const AtlasView = () => {
         };
 
         fetchAtlasData();
-    }, []);
+    }, [session]);
 
-    // 🚀 THE FIX: Handle Flip and save to Reviewed Memory
-    const toggleFlip = (id) => {
-        // Toggle the visual flip animation
-        setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }));
+    // 🚀 CLOUD SYNC: Handle Flip and save to Database
+    const toggleFlip = async (card) => {
+        // Toggle the visual flip animation instantly
+        setFlippedCards(prev => ({ ...prev, [card.id]: !prev[card.id] }));
         
-        // Mark as permanently reviewed in local storage
-        setReviewedCards(prev => {
-            const next = new Set(prev);
-            if (!next.has(id)) {
-                next.add(id);
-                localStorage.setItem('atlas_reviewed_cards', JSON.stringify([...next]));
+        // If not already reviewed, mark it and sync to Supabase
+        if (!reviewedCards.has(card.id)) {
+            // Optimistic UI update
+            setReviewedCards(prev => new Set(prev).add(card.id));
+
+            // Background Cloud Sync
+            try {
+                await supabase.from('flashcard_progress').upsert({
+                    student_id: session.user.id,
+                    deck_id: card.chapter || 'Flashcards', // Group by chapter
+                    card_id: card.id,
+                    status: 'reviewed',
+                    reviewed_at: new Date().toISOString()
+                }, { onConflict: 'student_id, deck_id, card_id' });
+            } catch (err) {
+                console.error("Failed to sync progress:", err);
             }
-            return next;
-        });
+        }
     };
 
     const toggleFolder = (chapter) => {
@@ -167,7 +183,6 @@ const AtlasView = () => {
                                 .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
                                 .map(([chapterName, cards]) => {
                                     
-                                    // 🚀 Calculate Folder Progress
                                     const reviewedCount = cards.filter(c => reviewedCards.has(c.id)).length;
                                     const totalCount = cards.length;
                                     const progressPercent = Math.round((reviewedCount / totalCount) * 100);
@@ -188,7 +203,7 @@ const AtlasView = () => {
                                                     <span className="truncate">{chapterName}</span>
                                                 </h3>
 
-                                                {/* 🚀 Folder Progress Bar */}
+                                                {/* Folder Progress Bar */}
                                                 <div className="flex items-center gap-4 bg-slate-50 dark:bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-100 dark:border-slate-700/50 ml-11 md:ml-0">
                                                     <div className="w-24 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                                                         <div 
@@ -209,7 +224,8 @@ const AtlasView = () => {
                                                         const isReviewed = reviewedCards.has(card.id);
 
                                                         return (
-                                                            <div key={card.id} onClick={() => toggleFlip(card.id)} className="cursor-pointer group perspective-1000 h-64 w-full">
+                                                            // 🚀 UPDATED: Pass the whole card object instead of just the ID
+                                                            <div key={card.id} onClick={() => toggleFlip(card)} className="cursor-pointer group perspective-1000 h-64 w-full">
                                                                 <div className={`relative w-full h-full transition-transform duration-500 transform-style-3d ${flippedCards[card.id] ? 'rotate-y-180' : ''}`}>
                                                                     
                                                                     {/* Front of Card (Question) */}
@@ -223,7 +239,7 @@ const AtlasView = () => {
                                                                             <div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div> Question
                                                                         </span>
 
-                                                                        {/* 🚀 Reviewed Badge */}
+                                                                        {/* Reviewed Badge */}
                                                                         {isReviewed && (
                                                                             <span className="absolute top-4 right-4 text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-widest flex items-center gap-1 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded-md">
                                                                                 <CheckCircle2 size={12} /> Reviewed
@@ -255,7 +271,7 @@ const AtlasView = () => {
                         )
                     )}
 
-                    {/* --- MIND MAPS TAB (Unchanged) --- */}
+                    {/* --- MIND MAPS TAB --- */}
                     {activeTab === 'mindmaps' && (
                         Object.keys(groupedMindmaps).length === 0 ? (
                             <div className="p-12 text-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center gap-3">
@@ -301,7 +317,12 @@ const AtlasView = () => {
                                                         {/* Interactive Diagram */}
                                                         {map.map_data && (
                                                             <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-white dark:bg-slate-900 shadow-inner">
-                                                                <InteractiveMindMap mapData={map.map_data} />
+                                                                {/* 🚀 ADDED STUDENT ID AND MAP ID PROPS */}
+                                                                <InteractiveMindMap 
+                                                                    mapData={map.map_data} 
+                                                                    studentId={session?.user?.id}
+                                                                    mapId={map.id}
+                                                                />
                                                             </div>
                                                         )}
                                                     </div>
