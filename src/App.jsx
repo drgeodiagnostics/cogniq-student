@@ -128,7 +128,7 @@ function App() {
 
   const fetchDashboardData = async (uid = session?.user?.id, silent = false) => { 
     if(!uid) return;
-    if (!silent) setLoading(true); // 👈 Only show full screen loader if not silent
+    if (!silent) setLoading(true); 
     
     try {
         const { data: enrollments } = await supabase.from('classroom_enrollments').select('classroom_id, classroom_master(name, org_id)').eq('student_id', uid);
@@ -145,33 +145,49 @@ function App() {
             .select('submission_id, exam_id, score, total_marks, status, submitted_at, answers, exam_master(title, classroom_master(name), questions:question_bank(*))') 
             .eq('student_id', uid);
         
-        // 🛡️ SQB DECRYPTION ENGINE
+        // 🛡️ FAULT-TOLERANT SQB DECRYPTION ENGINE
         const decryptedSubmissions = (rawSubmissions || []).map(sub => {
-            if (sub.exam_master?.questions) {
-                sub.exam_master.questions = sub.exam_master.questions.map(q => {
+            // Create a deep copy to avoid mutating the original raw data
+            let safeSub = JSON.parse(JSON.stringify(sub));
+
+            if (safeSub.exam_master && safeSub.exam_master.questions) {
+                safeSub.exam_master.questions = safeSub.exam_master.questions.map(q => {
                     let parsedOptions = q.options;
                     if (q.options?.cipher) {
                         try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch (e) { }
                     }
 
-                    let finalRationale = null;
+                    let finalRationale = q.explanations || q.rationale;
                     if (q.explanations?.cipher) {
                         try { finalRationale = JSON.parse(decryptAES256(q.explanations.cipher)); } catch (e) { }
                     }
 
                     let plainAnswer = q.correct_answer;
-                    try { plainAnswer = decryptAES256(q.correct_answer); } catch(e) {}
+                    if (typeof q.correct_answer === 'object' && q.correct_answer?.cipher) {
+                         try { plainAnswer = decryptAES256(q.correct_answer.cipher); } catch(e) {}
+                    } else if (typeof q.correct_answer === 'string' && q.correct_answer.length > 10) {
+                         // Attempt to decrypt if it looks like a raw cipher string
+                         try { plainAnswer = decryptAES256(q.correct_answer); } catch(e) { plainAnswer = q.correct_answer; }
+                    }
+
+                    let plainText = q.question_text;
+                    if (typeof q.question_text === 'object' && q.question_text?.cipher) {
+                        try { plainText = decryptAES256(q.question_text.cipher); } catch(e) {}
+                    } else if (typeof q.question_text === 'string' && q.question_text.length > 50 && !q.question_text.includes(' ')) {
+                        // If it's a long continuous string without spaces, it's likely a raw cipher
+                        try { plainText = decryptAES256(q.question_text); } catch(e) { plainText = q.question_text; }
+                    }
 
                     return { 
                         ...q, 
-                        question_text: decryptAES256(q.question_text), 
+                        question_text: plainText, 
                         options: parsedOptions,
                         rationale: finalRationale,
                         correct_answer: plainAnswer
                     };
                 });
             }
-            return sub;
+            return safeSub;
         });
         
         const completedExamIds = new Set(decryptedSubmissions.filter(s => s.status === 'published' || s.status === 'pending').map(s => s.exam_id));
