@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '../../supabaseClient'; 
 import { 
     ChevronLeft, ChevronRight, Flag, CheckCircle, AlertTriangle, 
-    Clock, LayoutGrid, Eraser, Cloud, CloudOff, Loader2, WifiOff, ShieldAlert, Lock, RefreshCw 
+    Clock, LayoutGrid, Eraser, Cloud, CloudOff, Loader2, WifiOff, ShieldAlert, Lock, RefreshCw, Pause 
 } from 'lucide-react';
 import { decryptAES256 } from '../../utils/security/sqbProtocol';
 
@@ -49,11 +49,12 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     const [flagged, setFlagged] = useState(new Set());
     const [timeLeft, setTimeLeft] = useState((exam?.duration_minutes || 60) * 60);
     
-    // 🛡️ SECURITY STATE
+    // 🛡️ SECURITY & COMMAND STATE
     const [violationCount, setViolationCount] = useState(0);
     const [showViolationModal, setShowViolationModal] = useState(false);
     const [isHardLocked, setIsHardLocked] = useState(false);
-    const [isCheckingUnlock, setIsCheckingUnlock] = useState(false); // 🚀 NEW: Manual Check State
+    const [isCheckingUnlock, setIsCheckingUnlock] = useState(false); 
+    const [isGlobalPaused, setIsGlobalPaused] = useState(exam?.status === 'paused'); // 🚀 NEW: Pause State
 
     // REFS FOR BACKGROUND SYNC
     const submissionIdRef = useRef(null);
@@ -108,7 +109,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         return shuffleArrayDeterministic(parsedQs, randFunc);
     }, [questions, exam.exam_id, studentId]);
 
-    // --- 📡 HYBRID DISPATCHER (Local + Cloud) ---
+    // --- 📡 HYBRID DISPATCHER ---
     const syncData = useCallback(async () => {
         const payload = {
             ...answersRef.current,
@@ -137,16 +138,65 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         }
     }, [LOCAL_BACKUP_KEY]);
 
+    // --- 📡 OFFLINE HARD-LOCK ENGINE ---
     useEffect(() => {
-        const handleOnline = () => syncData(); 
-        const handleOffline = () => setSyncStatus('offline_saved');
+        let offlineTimer = null;
+        const PENDING_LOCK_KEY = `pending_lock_${exam?.deployment_id}_${studentId}`;
+        const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam?.deployment_id}_${studentId}`;
+
+        const handleOffline = () => {
+            setSyncStatus('offline_saved');
+
+            offlineTimer = setTimeout(() => {
+                setIsHardLocked(true);
+                
+                const incidentPayload = {
+                    deployment_id: exam?.deployment_id,
+                    student_id: studentId,
+                    incident_type: 'network_disconnect',
+                    description: `Network Disconnect: Device offline for >30s. Exam Auto-Locked to prevent offline textbook/phone usage.`,
+                    severity: 'high'
+                };
+                
+                const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]');
+                existingQueue.push(incidentPayload);
+                localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
+                localStorage.setItem(PENDING_LOCK_KEY, 'true');
+
+            }, 30000); 
+        };
+
+        const handleOnline = async () => {
+            if (offlineTimer) {
+                clearTimeout(offlineTimer);
+                offlineTimer = null;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            if (localStorage.getItem(PENDING_LOCK_KEY) === 'true') {
+                if (submissionIdRef.current) {
+                    await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
+                }
+                localStorage.removeItem(PENDING_LOCK_KEY);
+            }
+
+            syncData(); 
+        };
+
+        if (!navigator.onLine) {
+            handleOffline();
+        }
+
         window.addEventListener('online', handleOnline);
         window.addEventListener('offline', handleOffline);
+        
         return () => {
+            if (offlineTimer) clearTimeout(offlineTimer);
             window.removeEventListener('online', handleOnline);
             window.removeEventListener('offline', handleOffline);
         };
-    }, [syncData]);
+    }, [syncData, exam?.deployment_id, studentId]);
 
     // --- ☁️ DATA HEALING INITIALIZATION ENGINE ---
     const initRef = useRef(false);
@@ -230,12 +280,35 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         initializeSession();
     }, [exam.exam_id, studentId, LOCAL_BACKUP_KEY, decryptedAndShuffledQuestions]);
 
-    // --- 🛡️ PROCTORING ENGINE ---
+    // --- 🛡️ PROCTORING ENGINE & OFFLINE THREAT QUEUE ---
     useEffect(() => {
         let violationDebounce = false;
+        const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam.deployment_id}_${studentId}`;
+
+        const flushOfflineThreats = async () => {
+            if (!navigator.onLine) return; 
+            
+            const queuedThreatsStr = localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY);
+            if (!queuedThreatsStr) return; 
+            
+            try {
+                const queuedThreats = JSON.parse(queuedThreatsStr);
+                if (Array.isArray(queuedThreats) && queuedThreats.length > 0) {
+                    const { error } = await supabase.from('proctoring_logs').insert(queuedThreats);
+                    if (!error) {
+                        localStorage.removeItem(OFFLINE_THREAT_QUEUE_KEY);
+                        console.log(`📡 Flushed ${queuedThreats.length} offline security violations to HQ.`);
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to flush offline threats:", err);
+            }
+        };
+
+        flushOfflineThreats();
 
         const logSecurityViolation = async (type, detail) => {
-            if (violationDebounce || isHardLocked) return;
+            if (violationDebounce || isHardLocked || isGlobalPaused) return; // 🚀 Don't flag if exam is paused!
             violationDebounce = true;
             setTimeout(() => { violationDebounce = false; }, 2000);
 
@@ -248,16 +321,27 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
             if (nextCount >= 5) {
                 setIsHardLocked(true);
-                if (submissionIdRef.current) {
+                if (submissionIdRef.current && navigator.onLine) {
                     await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
                 }
             }
 
-            if (!navigator.onLine) return; 
+            const incidentPayload = {
+                deployment_id: exam.deployment_id, 
+                student_id: studentId, 
+                incident_type: type, 
+                description: navigator.onLine ? detail : `${detail} (Logged Offline)`, 
+                severity: 'high'
+            };
+
+            if (!navigator.onLine) {
+                const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]');
+                existingQueue.push(incidentPayload);
+                localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
+                return; 
+            } 
             
-            await supabase.from('proctoring_logs').insert([{
-                deployment_id: exam.deployment_id, student_id: studentId, incident_type: type, description: detail, severity: 'high'
-            }]);
+            await supabase.from('proctoring_logs').insert([incidentPayload]);
             syncData(); 
         };
 
@@ -275,6 +359,12 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
         const handleBeforeUnload = (e) => { syncData(); e.preventDefault(); e.returnValue = ''; return ''; };
 
+        const handleOnlineDelayedFlush = async () => {
+            await new Promise(r => setTimeout(r, 2000));
+            flushOfflineThreats();
+        };
+
+        window.addEventListener('online', handleOnlineDelayedFlush);
         document.addEventListener('visibilitychange', handleVisibilityChange);
         window.addEventListener('blur', handleWindowBlur);
         window.addEventListener('resize', handleResize);
@@ -301,10 +391,97 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             window.removeEventListener('blur', handleWindowBlur);
             window.removeEventListener('resize', handleResize);
             window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('online', handleOnlineDelayedFlush);
             supabase.removeChannel(channel);
         };
-    }, [exam.deployment_id, studentId, syncData, isHardLocked, LOCAL_BACKUP_KEY]);
+    }, [exam.deployment_id, studentId, syncData, isHardLocked, isGlobalPaused, LOCAL_BACKUP_KEY]); // 🚀 Added isGlobalPaused dependency
 
+    // --- 🚨 WARNING MODAL 15-SECOND ESCALATION ENGINE ---
+    useEffect(() => {
+        let warningTimer = null;
+
+        if (showViolationModal && !isHardLocked && !isGlobalPaused) { // 🚀 Don't escalate if paused
+            warningTimer = setTimeout(async () => {
+                setIsHardLocked(true);
+                setShowViolationModal(false); 
+
+                const incidentPayload = {
+                    deployment_id: exam?.deployment_id,
+                    student_id: studentId,
+                    incident_type: 'warning_timeout',
+                    description: 'Security Warning ignored for >15s. Potential away-from-keyboard or secondary device usage. Exam Auto-Locked.',
+                    severity: 'high'
+                };
+
+                if (navigator.onLine) {
+                    await supabase.from('proctoring_logs').insert([incidentPayload]);
+                    if (submissionIdRef.current) {
+                        await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
+                    }
+                } else {
+                    const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam?.deployment_id}_${studentId}`;
+                    const PENDING_LOCK_KEY = `pending_lock_${exam?.deployment_id}_${studentId}`;
+                    
+                    const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]');
+                    existingQueue.push(incidentPayload);
+                    localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
+                    localStorage.setItem(PENDING_LOCK_KEY, 'true');
+                }
+            }, 15000); // 15 Seconds
+        }
+
+        return () => {
+            if (warningTimer) clearTimeout(warningTimer);
+        };
+    }, [showViolationModal, isHardLocked, isGlobalPaused, exam?.deployment_id, studentId]);
+
+    // --- 🛑 GLOBAL PAUSE LISTENER ---
+    useEffect(() => {
+        const deployChannel = supabase.channel(`deployment-status-${exam?.deployment_id}`)
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'exam_deployments', filter: `deployment_id=eq.${exam?.deployment_id}` }, 
+            (payload) => {
+                if (payload.new.status === 'paused') {
+                    setIsGlobalPaused(true);
+                    syncData(); // Force save right as it pauses
+                } else if (payload.new.status === 'live' || payload.new.status === 'active') {
+                    setIsGlobalPaused(false);
+                }
+            }).subscribe();
+
+        return () => supabase.removeChannel(deployChannel);
+    }, [exam?.deployment_id, syncData]);
+
+    // --- 🛰️ SAFETY NET: BACKUP POLLING (If WebSocket Fails or Latency is high) ---
+    useEffect(() => {
+        if (!exam?.deployment_id) return;
+
+        const safetyNet = setInterval(async () => {
+            try {
+                const { data, error } = await supabase
+                    .from('exam_deployments')
+                    .select('status')
+                    .eq('deployment_id', exam.deployment_id)
+                    .single();
+
+                if (error) throw error;
+
+                // Sync the UI state if the polling finds a mismatch with local state
+                if (data?.status === 'paused' && !isGlobalPaused) {
+                    console.warn("⚠️ WebSocket Missed: Safety Net triggered PAUSE");
+                    setIsGlobalPaused(true);
+                    syncData();
+                } else if ((data?.status === 'live' || data?.status === 'active') && isGlobalPaused) {
+                    console.warn("⚠️ WebSocket Missed: Safety Net triggered RESUME");
+                    setIsGlobalPaused(false);
+                }
+            } catch (err) {
+                console.error("Safety Net Check Failed:", err);
+            }
+        }, 10000); // Check every 10 seconds
+
+        return () => clearInterval(safetyNet);
+    }, [exam?.deployment_id, isGlobalPaused, syncData]);
+    
     // --- 🚀 NEW: MANUAL UNLOCK CHECK ---
     const manualUnlockCheck = async () => {
         setIsCheckingUnlock(true);
@@ -341,7 +518,9 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
     // --- TIMER ---
     useEffect(() => {
-        if (loadingData || isHardLocked) return;
+        // 🚀 THE FIX: Timer freezes if isGlobalPaused is true!
+        if (loadingData || isHardLocked || isGlobalPaused) return; 
+        
         const timer = setInterval(() => {
             setTimeLeft(prev => {
                 if (prev <= 1) { clearInterval(timer); return 0; }
@@ -352,7 +531,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             });
         }, 1000);
         return () => clearInterval(timer);
-    }, [loadingData, isHardLocked, syncData]);
+    }, [loadingData, isHardLocked, isGlobalPaused, syncData]);
 
     const formatTime = (seconds) => {
         const m = Math.floor(seconds / 60); const s = seconds % 60;
@@ -361,19 +540,19 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
     // --- HANDLERS ---
     const handleOptionSelect = (qId, optionText) => {
-        if (isHardLocked) return;
+        if (isHardLocked || isGlobalPaused) return; // 🚀 Block answers while paused
         const next = { ...answersRef.current, [qId]: optionText };
         setAnswers(next); answersRef.current = next; syncData(); 
     };
 
     const handleClearSelection = (qId) => {
-        if (isHardLocked) return;
+        if (isHardLocked || isGlobalPaused) return;
         const next = { ...answersRef.current }; delete next[qId];
         setAnswers(next); answersRef.current = next; syncData(); 
     };
 
     const toggleFlag = (qId) => {
-        if (isHardLocked) return;
+        if (isHardLocked || isGlobalPaused) return;
         const next = new Set(flaggedRef.current);
         if (next.has(qId)) next.delete(qId); else next.add(qId);
         setFlagged(next); flaggedRef.current = next; syncData(); 
@@ -402,6 +581,23 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             onCopy={(e) => e.preventDefault()}
             style={{ WebkitUserSelect: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}
         >
+            {/* 🛑 GLOBAL PAUSE SCREEN */}
+            {isGlobalPaused && !isHardLocked && (
+                <div className="fixed inset-0 z-[115] bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-6 text-center animate-in fade-in duration-500">
+                    <div className="max-w-md w-full">
+                        <div className="w-24 h-24 bg-blue-500/10 text-blue-500 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-blue-500/20 shadow-2xl">
+                            <Pause size={48} className="animate-pulse" />
+                        </div>
+                        <h2 className="text-3xl font-black text-white uppercase tracking-tight mb-4">Exam Paused</h2>
+                        <p className="text-slate-400 text-sm leading-relaxed mb-8">
+                            Your proctor has temporarily paused this assessment. 
+                            <br/><br/>
+                            <span className="text-blue-400 font-bold">Your timer has been frozen.</span> Please wait for further instructions.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             {/* 🚨 HARD LOCK SCREEN WITH REFRESH BUTTON */}
             {isHardLocked && (
                 <div className="fixed inset-0 z-[110] bg-slate-900 flex items-center justify-center p-6 text-center animate-in fade-in duration-500">

@@ -70,6 +70,7 @@ function App() {
   }, []);
 
   // --- CORE FUNCTIONS ---
+  
   const initializeUser = async (userId) => {
     setLoading(true);
     const { data: userProfile, error } = await supabase
@@ -85,9 +86,18 @@ function App() {
         return; 
     }
 
+    // 1. Organization Check (Existing)
     if (userProfile.org_master?.status === 'suspended') {
       alert(`🚫 SERVICE PAUSED\n\n${userProfile.org_master.name} is temporarily suspended.`);
       await supabase.auth.signOut(); 
+      return;
+    }
+
+    // 🚀 2. INDIVIDUAL SUSPENSION CHECK (Add this now)
+    if (userProfile.is_suspended === true) {
+      alert("🚫 ACCESS DENIED\n\nYour account has been suspended by the administration.");
+      await supabase.auth.signOut();
+      setLoading(false);
       return;
     }
     

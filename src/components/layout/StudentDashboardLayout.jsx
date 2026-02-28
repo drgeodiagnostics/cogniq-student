@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
     LayoutDashboard, BookOpen, Layers, Users, User, 
-    LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, ShieldCheck 
+    LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, ShieldCheck, Ban // 🚀 IMPORTED BAN ICON
 } from 'lucide-react';
 
 export default function StudentDashboardLayout({ userProfile, onSignOut, onNavigate, currentView, children }) {
@@ -9,6 +9,33 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
     const [isMobileOpen, setIsMobileOpen] = useState(false);
     // 💻 Desktop/iPad Landscape Collapse State
     const [isCollapsed, setIsCollapsed] = useState(false);
+
+    // 🚀 INTERCEPTOR: SUSPENDED STUDENT LOCKOUT
+    if (userProfile?.is_suspended) {
+        return (
+            <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-slate-100 p-6 animate-in fade-in zoom-in-95 duration-500">
+                <div className="max-w-md w-full text-center bg-slate-900 border border-red-900/50 p-10 rounded-[40px] shadow-2xl shadow-red-900/20">
+                    <div className="w-24 h-24 bg-red-500/10 text-red-500 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-red-500/20">
+                        <Ban size={48} className="animate-pulse" />
+                    </div>
+                    <h1 className="text-3xl font-black text-white uppercase tracking-tight mb-4">Access Revoked</h1>
+                    <p className="text-slate-400 text-sm leading-relaxed mb-8">
+                        Your account has been suspended by the faculty administration due to security or integrity violations. You cannot access the assessment portal at this time.
+                    </p>
+                    <div className="bg-slate-800 border border-white/5 p-4 rounded-2xl mb-8">
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">Registration Record</span>
+                        <span className="text-sm font-mono text-indigo-400">{userProfile?.regNo || 'UNKNOWN'}</span>
+                    </div>
+                    <button 
+                        onClick={onSignOut}
+                        className="w-full flex items-center justify-center gap-3 bg-red-600 hover:bg-red-700 text-white font-black uppercase tracking-widest py-4 rounded-xl transition-all shadow-lg shadow-red-600/20 active:scale-95 text-xs"
+                    >
+                        <LogOut size={18} /> Secure Logout
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     const navItems = [
         { id: 'dashboard', icon: LayoutDashboard, label: 'Overview' },
