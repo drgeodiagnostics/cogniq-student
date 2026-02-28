@@ -198,7 +198,19 @@ function App() {
         
         const availableExams = (deployments || []).filter(d => d.exam && !completedExamIds.has(d.exam.exam_id));
 
-        const { data: announcements } = await supabase.from('announcements').select('*, user_master(full_name)').in('classroom_id', classIds).order('created_at', { ascending: false }).limit(10);
+        // 🚀 FETCH ANNOUNCEMENTS WITH METADATA & LIKES
+const { data: announcements } = await supabase
+    .from('announcements')
+    .select(`
+        *, 
+        faculty:user_master(full_name), 
+        classroom:classroom_master(name),
+        likes:announcement_likes(student_id)
+    `)
+    .in('classroom_id', classIds)
+    .order('created_at', { ascending: false })
+    .limit(10);
+
         const { data: mentorData } = await supabase.from('mentorship_assignments').select('mentor_id, user:mentor_id(full_name, email)').eq('mentee_id', uid).maybeSingle();
 
         setDashboardData({
@@ -313,7 +325,13 @@ function App() {
         currentView={view}
         onUpdatePassword={handleUpdatePassword}
     >
-       {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData()} />}
+       {view === 'dashboard' && (
+    <DashboardView 
+        data={dashboardData} 
+        refresh={() => fetchDashboardData()} 
+        currentUserId={session.user.id}  // 👈 ADD THIS LINE
+    />
+)}
        
        {view === 'exams' && (
           <ExamsView 

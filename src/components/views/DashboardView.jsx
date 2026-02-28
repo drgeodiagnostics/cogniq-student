@@ -1,14 +1,102 @@
-import React from 'react';
-import { RefreshCw, Bell, BookOpen, Clock, ShieldCheck } from 'lucide-react';
+import React, { useState } from 'react';
+import { supabase } from '../../supabaseClient';
+import { RefreshCw, Bell, BookOpen, Clock, ShieldCheck, ThumbsUp, Users, User, Megaphone } from 'lucide-react';
 
-const DashboardView = ({ data, refresh }) => {
-    // Destructure the data passed from App.jsx's dashboardData state
+// --- SUB-COMPONENT: ANNOUNCEMENT CARD ---
+const AnnouncementCard = ({ a, currentUserId }) => {
+    // Safely check if current student has already acknowledged this
+    const [liked, setLiked] = useState(a.likes?.some(l => l.student_id === currentUserId) || false);
+    const [likeCount, setLikeCount] = useState(a.likes?.length || 0);
+    const [loading, setLoading] = useState(false);
+
+    const toggleAcknowledge = async () => {
+        if (loading || !currentUserId) return;
+        setLoading(true);
+
+        try {
+            if (liked) {
+                // Optimistic UI update (feels instant to the user)
+                setLikeCount(prev => Math.max(0, prev - 1));
+                setLiked(false);
+                await supabase
+                    .from('announcement_likes')
+                    .delete()
+                    .match({ announcement_id: a.id, student_id: currentUserId });
+            } else {
+                setLikeCount(prev => prev + 1);
+                setLiked(true);
+                await supabase
+                    .from('announcement_likes')
+                    .insert({ announcement_id: a.id, student_id: currentUserId });
+            }
+        } catch (error) {
+            console.error("Failed to acknowledge:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[24px] shadow-sm hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800/50 transition-all group flex flex-col">
+            
+            {/* Meta Tags (Classroom, Faculty, Date) */}
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+                <span className="flex items-center gap-1 text-[9px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest bg-indigo-50 dark:bg-indigo-900/30 px-2.5 py-1 rounded-md border border-indigo-100 dark:border-indigo-800/50">
+                    <Users size={10}/> {a.classroom?.name || a.classroom_master?.name || 'Classroom Notice'}
+                </span>
+                
+                {/* Will only show if you updated the App.jsx fetch query! */}
+                {(a.faculty?.full_name || a.user_master?.full_name) && (
+                    <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest bg-slate-50 dark:bg-slate-800 text-slate-500 px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700">
+                        <User size={10}/> {a.faculty?.full_name || a.user_master?.full_name}
+                    </span>
+                )}
+                
+                <span className="flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-50 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-100 dark:border-slate-700 ml-auto">
+                    <Clock size={10}/> {new Date(a.created_at).toLocaleDateString()}
+                </span>
+            </div>
+
+            {/* Message Content */}
+            <b className="text-slate-800 dark:text-white text-base md:text-lg leading-tight flex items-start gap-2 mb-2">
+                <Megaphone size={18} className="text-amber-500 shrink-0 mt-0.5" /> 
+                {a.title}
+            </b>
+            <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-medium whitespace-pre-wrap flex-1 mb-6">
+                {a.message || a.body || a.content}
+            </p>
+
+            {/* Acknowledge Footer */}
+            <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-4 mt-auto">
+                <button 
+                    onClick={toggleAcknowledge}
+                    disabled={loading}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50
+                        ${liked 
+                            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20' 
+                            : 'bg-slate-50 dark:bg-slate-800 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30'
+                        }`}
+                >
+                    <ThumbsUp size={14} className={liked ? "fill-white" : ""} />
+                    {liked ? 'Acknowledged' : 'Acknowledge'}
+                </button>
+
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                    {likeCount} {likeCount === 1 ? 'Acknowledgment' : 'Acknowledgements'}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- MAIN DASHBOARD VIEW ---
+const DashboardView = ({ data, refresh, currentUserId }) => {
     const { announcements = [], myClassrooms = [] } = data || {};
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500 pb-20">
             
-            {/* 🚀 COMMAND HEADER */}
+            {/* COMMAND HEADER */}
             <div className="flex flex-col md:flex-row md:items-center justify-between bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[24px] shadow-sm border border-slate-200 dark:border-slate-800 gap-4">
                 <div>
                     <h1 className="text-3xl font-black text-slate-800 dark:text-white uppercase tracking-tight">Overview</h1>
@@ -29,37 +117,27 @@ const DashboardView = ({ data, refresh }) => {
                 </div>
             </div>
             
-            {/* 🚀 GRID LAYOUT */}
+            {/* GRID LAYOUT */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 
                 {/* ANNOUNCEMENTS COLUMN */}
-                <div className="space-y-4">
+                <div className="space-y-4 flex flex-col">
                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4">
                         <Bell size={16} className="text-amber-500" /> Official Broadcasts
                     </h3>
                     
                     {announcements.length === 0 ? (
-                        <div className="p-10 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-[24px] border border-dashed border-slate-200 dark:border-slate-800 shadow-sm">
+                        <div className="p-10 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-[24px] border border-dashed border-slate-200 dark:border-slate-800 shadow-sm flex-1">
                             <span className="text-xs font-bold uppercase tracking-widest">No recent broadcasts.</span>
                         </div>
                     ) : (
                         <div className="space-y-4">
                             {announcements.map(a => (
-                                <div key={a.id} className="p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[24px] shadow-sm hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800/50 transition-all group">
-                                    <div className="flex justify-between items-start mb-4">
-                                        <span className="text-[9px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest bg-indigo-50 dark:bg-indigo-900/30 px-2.5 py-1 rounded-md border border-indigo-100 dark:border-indigo-800/50">
-                                            {a.classroom?.name || 'Classroom Notice'}
-                                        </span>
-                                        <span className="text-[10px] font-bold text-slate-400 flex items-center gap-1 bg-slate-50 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-100 dark:border-slate-700">
-                                            <Clock size={10}/> {new Date(a.created_at).toLocaleDateString()}
-                                        </span>
-                                    </div>
-                                    <b className="text-slate-800 dark:text-white text-base md:text-lg leading-tight block mb-2">{a.title}</b>
-                                    <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed font-medium whitespace-pre-wrap">
-                                        {/* 🚀 THE FIX: Properly map the new `message` schema */}
-                                        {a.message || a.body || a.content}
-                                    </p>
-                                </div>
+                                <AnnouncementCard 
+                                    key={a.id} 
+                                    a={a} 
+                                    currentUserId={currentUserId} 
+                                />
                             ))}
                         </div>
                     )}
