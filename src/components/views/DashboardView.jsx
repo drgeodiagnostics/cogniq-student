@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../../supabaseClient';
-import { RefreshCw, Bell, BookOpen, Clock, ShieldCheck, ThumbsUp, Users, User, Megaphone } from 'lucide-react';
+import { Bell, BookOpen, Clock, ShieldCheck, ThumbsUp, Users, User, Megaphone } from 'lucide-react';
 
 // --- SUB-COMPONENT: ANNOUNCEMENT CARD ---
 const AnnouncementCard = ({ a, currentUserId }) => {
@@ -94,7 +94,7 @@ const AnnouncementCard = ({ a, currentUserId }) => {
 };
 
 // --- MAIN DASHBOARD VIEW ---
-const DashboardView = ({ data, refresh, currentUserId }) => {
+const DashboardView = ({ data, currentUserId }) => {
     const { announcements = [], myClassrooms = [] } = data || {};
 
     return (
@@ -111,13 +111,6 @@ const DashboardView = ({ data, refresh, currentUserId }) => {
                         <ShieldCheck size={14} className="text-green-600 dark:text-green-500" />
                         <span className="text-[10px] font-black text-green-700 dark:text-green-400 uppercase tracking-widest">System Secure</span>
                     </div>
-                    <button 
-                        onClick={refresh} 
-                        className="p-3.5 bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400 rounded-xl hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-all active:scale-95 shadow-sm border border-indigo-100 dark:border-indigo-800 flex items-center justify-center"
-                        title="Refresh Data"
-                    >
-                        <RefreshCw size={20} />
-                    </button>
                 </div>
             </div>
             

@@ -361,6 +361,12 @@ function App() {
     );
   }
 
+  const refreshData = async () => {
+      if (session?.user?.id && profile?.org_id) {
+          await fetchDashboardData(session.user.id, profile.org_id, false);
+      }
+  };
+  
   const userProfileData = { 
       initials: profile?.full_name?.substring(0,2).toUpperCase() || 'ST', 
       name: profile?.full_name || 'Student', 
@@ -375,6 +381,7 @@ function App() {
         onNavigate={(screen) => setView(screen)} 
         currentView={view}
         onUpdatePassword={handleUpdatePassword}
+        onRefresh={refreshData}
     >
        {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData(session.user.id, profile.org_id)} currentUserId={session.user.id} />}
        {view === 'exams' && <ExamsView availableExams={dashboardData.availableExams} pastExams={dashboardData.pastExams} onStart={startExam} studentId={session.user.id} onRefresh={() => fetchDashboardData(session.user.id, profile.org_id, true)} />}

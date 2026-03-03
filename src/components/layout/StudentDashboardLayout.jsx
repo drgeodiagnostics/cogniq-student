@@ -1,14 +1,25 @@
 import React, { useState } from 'react';
 import { 
     LayoutDashboard, BookOpen, Layers, Users, User, 
-    LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, ShieldCheck, Ban // 🚀 IMPORTED BAN ICON
+    LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, ShieldCheck, Ban, RefreshCw 
 } from 'lucide-react';
 
-export default function StudentDashboardLayout({ userProfile, onSignOut, onNavigate, currentView, children }) {
+// 🚀 ADDED onRefresh prop
+export default function StudentDashboardLayout({ userProfile, onSignOut, onNavigate, currentView, onRefresh, children }) {
     // 📱 Mobile/iPad Portrait Drawer State
     const [isMobileOpen, setIsMobileOpen] = useState(false);
     // 💻 Desktop/iPad Landscape Collapse State
     const [isCollapsed, setIsCollapsed] = useState(false);
+    
+    // 🚀 NEW: Sync State
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    // 🚀 NEW: Sync Handler
+    const handleGlobalSync = async () => {
+        setIsSyncing(true);
+        if (onRefresh) await onRefresh();
+        setTimeout(() => setIsSyncing(false), 800); // 800ms minimum spin for smooth UX
+    };
 
     // 🚀 INTERCEPTOR: SUSPENDED STUDENT LOCKOUT
     if (userProfile?.is_suspended) {
@@ -58,12 +69,23 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
                     <ShieldCheck size={26} />
                     <span>CogniQ<span className="text-slate-800 dark:text-white">Ed</span></span>
                 </div>
-                <button 
-                    onClick={() => setIsMobileOpen(true)} 
-                    className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl active:scale-95 transition-all border border-slate-200 dark:border-slate-700"
-                >
-                    <Menu size={24} />
-                </button>
+                
+                {/* 🚀 ADDED SYNC TO MOBILE HEADER */}
+                <div className="flex items-center gap-2">
+                    <button 
+                        onClick={handleGlobalSync}
+                        disabled={isSyncing}
+                        className="p-2.5 text-slate-400 hover:text-indigo-600 rounded-xl active:scale-95 transition-all disabled:opacity-50"
+                    >
+                        <RefreshCw size={22} className={isSyncing ? "animate-spin text-indigo-500" : ""} />
+                    </button>
+                    <button 
+                        onClick={() => setIsMobileOpen(true)} 
+                        className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl active:scale-95 transition-all border border-slate-200 dark:border-slate-700"
+                    >
+                        <Menu size={24} />
+                    </button>
+                </div>
             </div>
 
             {/* --- SIDEBAR OVERLAY (Mobile/Tablet Portrait) --- */}
@@ -107,6 +129,20 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
 
                 {/* Navigation Links */}
                 <nav className="flex-1 overflow-y-auto py-6 px-4 space-y-2 no-scrollbar">
+                    
+                    {/* 🚀 ADDED SYNC TO DESKTOP SIDEBAR */}
+                    <div className="mb-6 flex justify-center">
+                        <button 
+                            onClick={handleGlobalSync}
+                            disabled={isSyncing}
+                            className={`flex items-center justify-center gap-2 py-3 rounded-xl transition-all font-bold text-xs uppercase tracking-widest disabled:opacity-50 ${isCollapsed ? 'w-12 bg-slate-50 text-slate-400 hover:text-indigo-600' : 'w-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-100'}`}
+                            title="Sync App Data"
+                        >
+                            <RefreshCw size={16} className={isSyncing ? "animate-spin text-indigo-600" : ""} />
+                            {!isCollapsed && <span>{isSyncing ? 'Syncing...' : 'Sync Data'}</span>}
+                        </button>
+                    </div>
+
                     {!isCollapsed && <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2 mb-4">Main Menu</p>}
                     
                     {navItems.map((item) => {
@@ -131,7 +167,7 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
                     })}
                 </nav>
 
-                {/* 🚀 UPGRADED: Secure ID Badge Profile Section */}
+                {/* Secure ID Badge Profile Section */}
                 <div className="p-4 border-t border-slate-200 dark:border-slate-800 shrink-0">
                     <div className={`flex flex-col gap-2 ${isCollapsed ? 'items-center' : ''}`}>
                         <button 
