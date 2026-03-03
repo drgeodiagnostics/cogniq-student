@@ -6,7 +6,9 @@ import {
 } from 'lucide-react';
 import { decryptAES256 } from '../../utils/security/sqbProtocol';
 
-// --- 🚀 UTILITIES: Seeded Randomization Engine ---
+// ==========================================
+// 🚀 UTILITIES: Seeded Randomization Engine
+// ==========================================
 const generateSeed = (str) => {
     for(var i = 0, h = 1779033703 ^ str.length; i < str.length; i++) {
         h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
@@ -36,6 +38,9 @@ const shuffleArrayDeterministic = (array, randomFunc) => {
     return shuffled;
 };
 
+// ==========================================
+// 🧠 MAIN ENGINE: ActiveExamInterface
+// ==========================================
 export default function ActiveExamInterface({ exam, questions, studentId, isPWA, onComplete }) {
     const LOCAL_BACKUP_KEY = `exam_offline_buffer_${exam?.deployment_id}_${studentId}`;
 
@@ -54,7 +59,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     const [showViolationModal, setShowViolationModal] = useState(false);
     const [isHardLocked, setIsHardLocked] = useState(false);
     const [isCheckingUnlock, setIsCheckingUnlock] = useState(false); 
-    const [isGlobalPaused, setIsGlobalPaused] = useState(exam?.status === 'paused'); // 🚀 NEW: Pause State
+    const [isGlobalPaused, setIsGlobalPaused] = useState(exam?.status === 'paused'); 
 
     // REFS FOR BACKGROUND SYNC
     const submissionIdRef = useRef(null);
@@ -64,10 +69,10 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     const violationsRef = useRef(0);
 
     // --- 🚀 ENGINE: DETERMINISTIC DECRYPTION & SHUFFLE ---
+    // --- 🚀 ENGINE: DETERMINISTIC DECRYPTION & SHUFFLE ---
     const decryptedAndShuffledQuestions = useMemo(() => {
         if (!questions) return [];
-        
-        const masterSeedStr = `${studentId}_${exam.exam_id}`;
+        const masterSeedStr = `${studentId}_${exam?.exam_id}`; // 👈 Added ?
         const masterSeedFunc = generateSeed(masterSeedStr);
         const randFunc = mulberry32(masterSeedFunc());
         
@@ -98,16 +103,11 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 randomizedOptions = shuffleArrayDeterministic(validOptions, qRandFunc);
             }
 
-            return { 
-                ...q, 
-                question_text: plainText, 
-                correct_answer: actualCorrectText, 
-                options: randomizedOptions 
-            };
+            return { ...q, question_text: plainText, correct_answer: actualCorrectText, options: randomizedOptions };
         });
 
         return shuffleArrayDeterministic(parsedQs, randFunc);
-    }, [questions, exam.exam_id, studentId]);
+    }, [questions, exam?.exam_id, studentId]); // 👈 Added ?
 
     // --- 📡 HYBRID DISPATCHER ---
     const syncData = useCallback(async () => {
@@ -126,16 +126,9 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         }
 
         setSyncStatus('saving');
-        const { error } = await supabase
-            .from('exam_submissions')
-            .update({ answers: payload })
-            .eq('submission_id', submissionIdRef.current);
-        
-        if (error) {
-            setSyncStatus('offline_saved');
-        } else {
-            setTimeout(() => setSyncStatus('synced'), 500); 
-        }
+        const { error } = await supabase.from('exam_submissions').update({ answers: payload }).eq('submission_id', submissionIdRef.current);
+        if (error) setSyncStatus('offline_saved');
+        else setTimeout(() => setSyncStatus('synced'), 500); 
     }, [LOCAL_BACKUP_KEY]);
 
     // --- 📡 OFFLINE HARD-LOCK ENGINE ---
@@ -146,57 +139,43 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
         const handleOffline = () => {
             setSyncStatus('offline_saved');
-
             offlineTimer = setTimeout(() => {
                 setIsHardLocked(true);
-                
                 const incidentPayload = {
-                    deployment_id: exam?.deployment_id,
+                    deployment_id: exam?.deployment_id, 
                     student_id: studentId,
-                    incident_type: 'network_disconnect',
-                    description: `Network Disconnect: Device offline for >30s. Exam Auto-Locked to prevent offline textbook/phone usage.`,
+                    org_id: exam?.org_id, 
+                    incident_type: 'network_disconnect', 
+                    description: `Network Disconnect: Device offline for >30s. Exam Auto-Locked.`, 
                     severity: 'high'
                 };
-                
                 const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]');
                 existingQueue.push(incidentPayload);
                 localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
                 localStorage.setItem(PENDING_LOCK_KEY, 'true');
-
             }, 30000); 
         };
 
         const handleOnline = async () => {
-            if (offlineTimer) {
-                clearTimeout(offlineTimer);
-                offlineTimer = null;
-            }
-
+            if (offlineTimer) { clearTimeout(offlineTimer); offlineTimer = null; }
             await new Promise(resolve => setTimeout(resolve, 2000));
 
             if (localStorage.getItem(PENDING_LOCK_KEY) === 'true') {
-                if (submissionIdRef.current) {
-                    await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
-                }
+                if (submissionIdRef.current) await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
                 localStorage.removeItem(PENDING_LOCK_KEY);
             }
-
             syncData(); 
         };
 
-        if (!navigator.onLine) {
-            handleOffline();
-        }
-
+        if (!navigator.onLine) handleOffline();
         window.addEventListener('online', handleOnline);
         window.addEventListener('offline', handleOffline);
-        
         return () => {
             if (offlineTimer) clearTimeout(offlineTimer);
             window.removeEventListener('online', handleOnline);
             window.removeEventListener('offline', handleOffline);
         };
-    }, [syncData, exam?.deployment_id, studentId]);
+    }, [syncData, exam?.deployment_id, exam?.org_id, studentId]);
 
     // --- ☁️ DATA HEALING INITIALIZATION ENGINE ---
     const initRef = useRef(false);
@@ -205,35 +184,46 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         initRef.current = true;
 
         const initializeSession = async () => {
-            try {
-                const localBackupStr = localStorage.getItem(LOCAL_BACKUP_KEY);
-                let activePayload = localBackupStr ? JSON.parse(localBackupStr) : {};
+    try {
+        const localBackupStr = localStorage.getItem(LOCAL_BACKUP_KEY);
+        let activePayload = localBackupStr ? JSON.parse(localBackupStr) : {};
 
-                const { data, error: selectErr } = await supabase
-                    .from('exam_submissions')
-                    .select('submission_id, answers, is_locked')
-                    .eq('exam_id', exam.exam_id)
-                    .eq('student_id', studentId)
-                    .limit(1);
+        // 🚀 FIX: Fetch the 'status' column too
+        const { data } = await supabase
+            .from('exam_submissions')
+            .select('submission_id, answers, is_locked, status') 
+            .eq('exam_id', exam?.exam_id)
+            .eq('student_id', studentId)
+            .limit(1); 
 
-                if (selectErr) console.error("🚨 Supabase Fetch Error:", selectErr.message);
+        const activeRecord = data && data.length > 0 ? data[0] : null;
 
-                const activeRecord = data && data.length > 0 ? data[0] : null;
+        // 🛑 CRITICAL BYPASS: If the exam is already submitted, force complete it.
+        if (activeRecord && (activeRecord.status === 'published' || activeRecord.status === 'pending')) {
+            console.warn("Exam already submitted. Forcing exit.");
+            // Call onComplete with dummy data so App.jsx handles the redirect
+            onComplete(0, 0, {}); 
+            return; // Stop initialization
+        }
 
-                if (activeRecord) {
-                    submissionIdRef.current = activeRecord.submission_id;
-                    const cloudPayload = activeRecord.answers || {};
-                    if ((cloudPayload.__timeLeft || Infinity) <= (activePayload.__timeLeft || Infinity)) {
-                        activePayload = cloudPayload; 
-                    }
-                } else if (navigator.onLine) {
-                    const { data: newRow } = await supabase
-                        .from('exam_submissions')
-                        .insert([{ exam_id: exam.exam_id, student_id: studentId, status: 'in_progress', answers: activePayload }])
-                        .select('submission_id')
-                        .single();
-                    if (newRow) submissionIdRef.current = newRow.submission_id;
-                }
+        if (activeRecord) {
+            submissionIdRef.current = activeRecord.submission_id;
+            const cloudPayload = activeRecord.answers || {};
+            if ((cloudPayload.__timeLeft || Infinity) <= (activePayload.__timeLeft || Infinity)) activePayload = cloudPayload; 
+        } else if (navigator.onLine) {
+            const { data: newRow } = await supabase
+            .from('exam_submissions')
+            .insert([{ 
+                exam_id: exam?.exam_id, 
+                student_id: studentId, 
+                org_id: exam?.org_id, 
+                status: 'in_progress', 
+                answers: activePayload 
+            }])
+            .select('submission_id')
+            .single();
+            if (newRow) submissionIdRef.current = newRow.submission_id;
+        }
 
                 if (activePayload.__timeLeft) { setTimeLeft(activePayload.__timeLeft); timeRef.current = activePayload.__timeLeft; }
                 if (activePayload.__flagged) { 
@@ -245,49 +235,35 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
                 if (activeRecord) {
                     if (activeRecord.is_locked) {
-                        setIsHardLocked(true);
-                        loadedViolations = Math.max(loadedViolations, 5); 
+                        setIsHardLocked(true); loadedViolations = Math.max(loadedViolations, 5); 
                     } else if (!activeRecord.is_locked && loadedViolations >= 5) {
-                        setIsHardLocked(false);
-                        loadedViolations = 0;
-                        activePayload.__violations = 0;
+                        setIsHardLocked(false); loadedViolations = 0; activePayload.__violations = 0;
                         localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...activePayload, __violations: 0 }));
-                    } else {
-                        setIsHardLocked(false);
-                    }
-                } else if (loadedViolations >= 5) {
-                    setIsHardLocked(true);
-                }
+                    } else { setIsHardLocked(false); }
+                } else if (loadedViolations >= 5) { setIsHardLocked(true); }
 
-                violationsRef.current = loadedViolations;
-                setViolationCount(loadedViolations);
+                violationsRef.current = loadedViolations; setViolationCount(loadedViolations);
 
                 const cleanAnswers = { ...activePayload };
                 delete cleanAnswers.__timeLeft; delete cleanAnswers.__flagged; delete cleanAnswers.__violations;
-                
                 setAnswers(cleanAnswers); answersRef.current = cleanAnswers;
 
                 const firstUnansweredIdx = decryptedAndShuffledQuestions.findIndex(q => !cleanAnswers[q.question_id]);
                 if (firstUnansweredIdx !== -1) setCurrentIdx(firstUnansweredIdx);
                 else if (Object.keys(cleanAnswers).length > 0) setCurrentIdx(decryptedAndShuffledQuestions.length - 1);
 
-            } catch (err) {
-                console.error("Init Fault:", err);
-            } finally {
-                setLoadingData(false);
-            }
+            } finally { setLoadingData(false); }
         };
         initializeSession();
-    }, [exam.exam_id, studentId, LOCAL_BACKUP_KEY, decryptedAndShuffledQuestions]);
+    }, [exam?.exam_id, exam?.org_id, studentId, LOCAL_BACKUP_KEY, decryptedAndShuffledQuestions]); // 👈 Added ?
 
     // --- 🛡️ PROCTORING ENGINE & OFFLINE THREAT QUEUE ---
     useEffect(() => {
         let violationDebounce = false;
-        const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam.deployment_id}_${studentId}`;
+        const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam?.deployment_id}_${studentId}`; // 👈 Added ?
 
         const flushOfflineThreats = async () => {
             if (!navigator.onLine) return; 
-            
             const queuedThreatsStr = localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY);
             if (!queuedThreatsStr) return; 
             
@@ -295,52 +271,41 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 const queuedThreats = JSON.parse(queuedThreatsStr);
                 if (Array.isArray(queuedThreats) && queuedThreats.length > 0) {
                     const { error } = await supabase.from('proctoring_logs').insert(queuedThreats);
-                    if (!error) {
-                        localStorage.removeItem(OFFLINE_THREAT_QUEUE_KEY);
-                        console.log(`📡 Flushed ${queuedThreats.length} offline security violations to HQ.`);
-                    }
+                    if (!error) localStorage.removeItem(OFFLINE_THREAT_QUEUE_KEY);
                 }
-            } catch (err) {
-                console.error("Failed to flush offline threats:", err);
-            }
+            } catch (err) {}
         };
-
         flushOfflineThreats();
 
         const logSecurityViolation = async (type, detail) => {
-            if (violationDebounce || isHardLocked || isGlobalPaused) return; // 🚀 Don't flag if exam is paused!
-            violationDebounce = true;
-            setTimeout(() => { violationDebounce = false; }, 2000);
+            if (violationDebounce || isHardLocked || isGlobalPaused) return; 
+            violationDebounce = true; setTimeout(() => { violationDebounce = false; }, 2000);
 
             const nextCount = violationsRef.current + 1;
-            setViolationCount(nextCount);
-            violationsRef.current = nextCount;
+            setViolationCount(nextCount); violationsRef.current = nextCount;
 
             const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}');
             localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: nextCount }));
 
             if (nextCount >= 5) {
                 setIsHardLocked(true);
-                if (submissionIdRef.current && navigator.onLine) {
-                    await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
-                }
+                if (submissionIdRef.current && navigator.onLine) await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
             }
 
             const incidentPayload = {
-                deployment_id: exam.deployment_id, 
-                student_id: studentId, 
-                incident_type: type, 
-                description: navigator.onLine ? detail : `${detail} (Logged Offline)`, 
-                severity: 'high'
-            };
+                    deployment_id: exam?.deployment_id, // 👈 Added ?
+                    student_id: studentId, 
+                    org_id: exam?.org_id, // 👈 Added ?
+                    incident_type: type, 
+                    description: navigator.onLine ? detail : `${detail} (Logged Offline)`, 
+                    severity: 'high'
+                };
 
             if (!navigator.onLine) {
-                const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]');
-                existingQueue.push(incidentPayload);
+                const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]'); existingQueue.push(incidentPayload);
                 localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
                 return; 
             } 
-            
             await supabase.from('proctoring_logs').insert([incidentPayload]);
             syncData(); 
         };
@@ -350,19 +315,10 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         
         let lastWidth = window.innerWidth;
         const handleResize = () => {
-            if (window.innerWidth !== lastWidth) {
-                logSecurityViolation('window_resize', 'Window resized: Potential Split View.');
-                setShowViolationModal(true);
-                lastWidth = window.innerWidth;
-            }
+            if (window.innerWidth !== lastWidth) { logSecurityViolation('window_resize', 'Window resized: Potential Split View.'); setShowViolationModal(true); lastWidth = window.innerWidth; }
         };
-
         const handleBeforeUnload = (e) => { syncData(); e.preventDefault(); e.returnValue = ''; return ''; };
-
-        const handleOnlineDelayedFlush = async () => {
-            await new Promise(r => setTimeout(r, 2000));
-            flushOfflineThreats();
-        };
+        const handleOnlineDelayedFlush = async () => { await new Promise(r => setTimeout(r, 2000)); flushOfflineThreats(); };
 
         window.addEventListener('online', handleOnlineDelayedFlush);
         document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -374,153 +330,83 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'exam_submissions', filter: `student_id=eq.${studentId}` }, 
             (payload) => {
                 if (payload.new.is_locked === false) {
-                    setIsHardLocked(false);
-                    setShowViolationModal(false);
-                    violationsRef.current = 0; setViolationCount(0);
-                    try {
-                        const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}');
-                        localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: 0 }));
-                    } catch(e) {}
-                } else if (payload.new.is_locked === true) {
-                    setIsHardLocked(true);
-                }
+                    setIsHardLocked(false); setShowViolationModal(false); violationsRef.current = 0; setViolationCount(0);
+                    try { const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}'); localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: 0 })); } catch(e) {}
+                } else if (payload.new.is_locked === true) setIsHardLocked(true);
             }).subscribe();
 
         return () => {
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            window.removeEventListener('blur', handleWindowBlur);
-            window.removeEventListener('resize', handleResize);
-            window.removeEventListener('beforeunload', handleBeforeUnload);
-            window.removeEventListener('online', handleOnlineDelayedFlush);
-            supabase.removeChannel(channel);
+            document.removeEventListener('visibilitychange', handleVisibilityChange); window.removeEventListener('blur', handleWindowBlur);
+            window.removeEventListener('resize', handleResize); window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('online', handleOnlineDelayedFlush); supabase.removeChannel(channel);
         };
-    }, [exam.deployment_id, studentId, syncData, isHardLocked, isGlobalPaused, LOCAL_BACKUP_KEY]); // 🚀 Added isGlobalPaused dependency
+    }, [exam?.deployment_id, exam?.org_id, studentId, syncData, isHardLocked, isGlobalPaused, LOCAL_BACKUP_KEY]); // 👈 Added ?
 
     // --- 🚨 WARNING MODAL 15-SECOND ESCALATION ENGINE ---
     useEffect(() => {
         let warningTimer = null;
-
-        if (showViolationModal && !isHardLocked && !isGlobalPaused) { // 🚀 Don't escalate if paused
+        if (showViolationModal && !isHardLocked && !isGlobalPaused) { 
             warningTimer = setTimeout(async () => {
-                setIsHardLocked(true);
-                setShowViolationModal(false); 
-
-                const incidentPayload = {
-                    deployment_id: exam?.deployment_id,
-                    student_id: studentId,
-                    incident_type: 'warning_timeout',
-                    description: 'Security Warning ignored for >15s. Potential away-from-keyboard or secondary device usage. Exam Auto-Locked.',
-                    severity: 'high'
+                setIsHardLocked(true); setShowViolationModal(false); 
+                const incidentPayload = { 
+                    deployment_id: exam?.deployment_id, 
+                    student_id: studentId, 
+                    org_id: exam?.org_id,
+                    incident_type: 'warning_timeout', 
+                    description: 'Security Warning ignored for >15s. Exam Auto-Locked.', 
+                    severity: 'high' 
                 };
 
                 if (navigator.onLine) {
                     await supabase.from('proctoring_logs').insert([incidentPayload]);
-                    if (submissionIdRef.current) {
-                        await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
-                    }
+                    if (submissionIdRef.current) await supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
                 } else {
                     const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam?.deployment_id}_${studentId}`;
                     const PENDING_LOCK_KEY = `pending_lock_${exam?.deployment_id}_${studentId}`;
-                    
-                    const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]');
-                    existingQueue.push(incidentPayload);
-                    localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
-                    localStorage.setItem(PENDING_LOCK_KEY, 'true');
+                    const existingQueue = JSON.parse(localStorage.getItem(OFFLINE_THREAT_QUEUE_KEY) || '[]'); existingQueue.push(incidentPayload);
+                    localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue)); localStorage.setItem(PENDING_LOCK_KEY, 'true');
                 }
-            }, 15000); // 15 Seconds
+            }, 15000); 
         }
+        return () => { if (warningTimer) clearTimeout(warningTimer); };
+    }, [showViolationModal, isHardLocked, isGlobalPaused, exam?.deployment_id, exam?.org_id, studentId]);
 
-        return () => {
-            if (warningTimer) clearTimeout(warningTimer);
-        };
-    }, [showViolationModal, isHardLocked, isGlobalPaused, exam?.deployment_id, studentId]);
-
-    // --- 🛑 GLOBAL PAUSE LISTENER ---
+    // --- 🛑 GLOBAL PAUSE LISTENER & SAFETY NET ---
     useEffect(() => {
         const deployChannel = supabase.channel(`deployment-status-${exam?.deployment_id}`)
             .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'exam_deployments', filter: `deployment_id=eq.${exam?.deployment_id}` }, 
             (payload) => {
-                if (payload.new.status === 'paused') {
-                    setIsGlobalPaused(true);
-                    syncData(); // Force save right as it pauses
-                } else if (payload.new.status === 'live' || payload.new.status === 'active') {
-                    setIsGlobalPaused(false);
-                }
+                if (payload.new.status === 'paused') { setIsGlobalPaused(true); syncData(); } 
+                else if (payload.new.status === 'live' || payload.new.status === 'active') setIsGlobalPaused(false);
             }).subscribe();
-
-        return () => supabase.removeChannel(deployChannel);
-    }, [exam?.deployment_id, syncData]);
-
-    // --- 🛰️ SAFETY NET: BACKUP POLLING (If WebSocket Fails or Latency is high) ---
-    useEffect(() => {
-        if (!exam?.deployment_id) return;
 
         const safetyNet = setInterval(async () => {
             try {
-                const { data, error } = await supabase
-                    .from('exam_deployments')
-                    .select('status')
-                    .eq('deployment_id', exam.deployment_id)
-                    .single();
+                const { data } = await supabase.from('exam_deployments').select('status').eq('deployment_id', exam?.deployment_id).single(); // 👈 Added ?
+                if (data?.status === 'paused' && !isGlobalPaused) { setIsGlobalPaused(true); syncData(); } 
+                else if ((data?.status === 'live' || data?.status === 'active') && isGlobalPaused) setIsGlobalPaused(false);
+            } catch (err) {}
+        }, 10000);
 
-                if (error) throw error;
-
-                // Sync the UI state if the polling finds a mismatch with local state
-                if (data?.status === 'paused' && !isGlobalPaused) {
-                    console.warn("⚠️ WebSocket Missed: Safety Net triggered PAUSE");
-                    setIsGlobalPaused(true);
-                    syncData();
-                } else if ((data?.status === 'live' || data?.status === 'active') && isGlobalPaused) {
-                    console.warn("⚠️ WebSocket Missed: Safety Net triggered RESUME");
-                    setIsGlobalPaused(false);
-                }
-            } catch (err) {
-                console.error("Safety Net Check Failed:", err);
-            }
-        }, 10000); // Check every 10 seconds
-
-        return () => clearInterval(safetyNet);
+        return () => { supabase.removeChannel(deployChannel); clearInterval(safetyNet); }
     }, [exam?.deployment_id, isGlobalPaused, syncData]);
     
-    // --- 🚀 NEW: MANUAL UNLOCK CHECK ---
+    // --- 🚀 MANUAL UNLOCK CHECK ---
     const manualUnlockCheck = async () => {
         setIsCheckingUnlock(true);
         try {
-            const { data, error } = await supabase
-                .from('exam_submissions')
-                .select('is_locked')
-                .eq('exam_id', exam.exam_id)
-                .eq('student_id', studentId)
-                .limit(1);
-
-            const activeRecord = data && data.length > 0 ? data[0] : null;
-
-            if (activeRecord && activeRecord.is_locked === false) {
-                setIsHardLocked(false);
-                setShowViolationModal(false);
-                violationsRef.current = 0;
-                setViolationCount(0);
-                
-                try {
-                    const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}');
-                    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: 0 }));
-                } catch(e) {}
-            } else {
-                alert("Status: Still Locked.\n\nPlease wait for your proctor to revoke the lock before trying again.");
-            }
-        } catch (err) {
-            console.error("Check failed:", err);
-            alert("Network Error: Could not verify status with the server.");
-        } finally {
-            setIsCheckingUnlock(false);
-        }
+            const { data } = await supabase.from('exam_submissions').select('is_locked').eq('exam_id', exam?.exam_id).eq('student_id', studentId).limit(1); // 👈 Added ?
+            if (data && data.length > 0 && data[0].is_locked === false) {
+                setIsHardLocked(false); setShowViolationModal(false); violationsRef.current = 0; setViolationCount(0);
+                try { const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}'); localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: 0 })); } catch(e) {}
+            } else { alert("Status: Still Locked.\n\nPlease wait for your proctor to revoke the lock before trying again."); }
+        } catch (err) { alert("Network Error: Could not verify status with the server."); } 
+        finally { setIsCheckingUnlock(false); }
     };
 
     // --- TIMER ---
     useEffect(() => {
-        // 🚀 THE FIX: Timer freezes if isGlobalPaused is true!
         if (loadingData || isHardLocked || isGlobalPaused) return; 
-        
         const timer = setInterval(() => {
             setTimeLeft(prev => {
                 if (prev <= 1) { clearInterval(timer); return 0; }
@@ -533,14 +419,11 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         return () => clearInterval(timer);
     }, [loadingData, isHardLocked, isGlobalPaused, syncData]);
 
-    const formatTime = (seconds) => {
-        const m = Math.floor(seconds / 60); const s = seconds % 60;
-        return `${m}:${s.toString().padStart(2, '0')}`;
-    };
+    const formatTime = (seconds) => { const m = Math.floor(seconds / 60); const s = seconds % 60; return `${m}:${s.toString().padStart(2, '0')}`; };
 
     // --- HANDLERS ---
     const handleOptionSelect = (qId, optionText) => {
-        if (isHardLocked || isGlobalPaused) return; // 🚀 Block answers while paused
+        if (isHardLocked || isGlobalPaused) return; 
         const next = { ...answersRef.current, [qId]: optionText };
         setAnswers(next); answersRef.current = next; syncData(); 
     };
@@ -571,9 +454,10 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     if (loadingData) return <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-900"><Loader2 size={32} className="animate-spin text-indigo-500 mb-4" /><p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Securing Session...</p></div>;
 
     const currentQ = decryptedAndShuffledQuestions[currentIdx];
-    const isFlagged = flagged.has(currentQ?.question_id);
-    const hasAnswer = !!answers[currentQ?.question_id]; 
 
+    // ==========================================
+    // 🎨 UI COMPOSITION
+    // ==========================================
     return (
         <div 
             className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-[#0b0f19] font-sans select-none overflow-hidden text-slate-900 dark:text-slate-100"
@@ -581,7 +465,63 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             onCopy={(e) => e.preventDefault()}
             style={{ WebkitUserSelect: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}
         >
-            {/* 🛑 GLOBAL PAUSE SCREEN */}
+            <ExamModals 
+                isGlobalPaused={isGlobalPaused} 
+                isHardLocked={isHardLocked} 
+                showViolationModal={showViolationModal} 
+                showConfirm={showConfirm}
+                studentId={studentId}
+                violationCount={violationCount}
+                isCheckingUnlock={isCheckingUnlock}
+                manualUnlockCheck={manualUnlockCheck}
+                setShowViolationModal={setShowViolationModal}
+                handleFinalSubmit={handleFinalSubmit}
+                setShowConfirm={setShowConfirm}
+            />
+
+            <ExamHeader 
+                examTitle={exam?.title} 
+                violationCount={violationCount} 
+                syncStatus={syncStatus} 
+                timeLeft={timeLeft} 
+                formatTime={formatTime} 
+            />
+
+            <div className={`flex-1 flex flex-col md:flex-row min-h-0 transition-all duration-500 ${violationCount > 0 ? 'ring-inset ring-4 ring-red-500/5' : ''}`}>
+                <QuestionPanel 
+                    currentQ={currentQ}
+                    currentIdx={currentIdx}
+                    totalQs={decryptedAndShuffledQuestions.length}
+                    answers={answers}
+                    flagged={flagged}
+                    violationCount={violationCount}
+                    handleOptionSelect={handleOptionSelect}
+                    handleClearSelection={handleClearSelection}
+                    toggleFlag={toggleFlag}
+                    setCurrentIdx={setCurrentIdx}
+                    setShowConfirm={setShowConfirm}
+                />
+                
+                <SidebarNavigator 
+                    questions={decryptedAndShuffledQuestions}
+                    currentIdx={currentIdx}
+                    answers={answers}
+                    flagged={flagged}
+                    setCurrentIdx={setCurrentIdx}
+                    setShowConfirm={setShowConfirm}
+                />
+            </div>
+        </div>
+    );
+}
+
+// ==========================================
+// 🎨 SUB-COMPONENTS (Clean UI Segregation)
+// ==========================================
+
+const ExamModals = ({ isGlobalPaused, isHardLocked, showViolationModal, showConfirm, studentId, violationCount, isCheckingUnlock, manualUnlockCheck, setShowViolationModal, handleFinalSubmit, setShowConfirm }) => {
+    return (
+        <>
             {isGlobalPaused && !isHardLocked && (
                 <div className="fixed inset-0 z-[115] bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-6 text-center animate-in fade-in duration-500">
                     <div className="max-w-md w-full">
@@ -590,15 +530,13 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                         </div>
                         <h2 className="text-3xl font-black text-white uppercase tracking-tight mb-4">Exam Paused</h2>
                         <p className="text-slate-400 text-sm leading-relaxed mb-8">
-                            Your proctor has temporarily paused this assessment. 
-                            <br/><br/>
+                            Your proctor has temporarily paused this assessment. <br/><br/>
                             <span className="text-blue-400 font-bold">Your timer has been frozen.</span> Please wait for further instructions.
                         </p>
                     </div>
                 </div>
             )}
 
-            {/* 🚨 HARD LOCK SCREEN WITH REFRESH BUTTON */}
             {isHardLocked && (
                 <div className="fixed inset-0 z-[110] bg-slate-900 flex items-center justify-center p-6 text-center animate-in fade-in duration-500">
                     <div className="max-w-md w-full">
@@ -607,16 +545,12 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                         </div>
                         <h2 className="text-3xl font-black text-white uppercase tracking-tight mb-4">Session Locked</h2>
                         <p className="text-slate-400 text-sm leading-relaxed mb-8">This assessment is locked due to multiple security violations. Contact your proctor to resume.</p>
-                        
                         <div className="bg-slate-800 border border-white/10 p-4 rounded-2xl mb-8">
                             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">ID Ref</span>
                             <span className="text-sm font-mono text-indigo-400">{studentId.substring(0,8).toUpperCase()}</span>
                         </div>
-
-                        {/* 🚀 NEW MANUAL CHECK BUTTON */}
                         <button 
-                            onClick={manualUnlockCheck}
-                            disabled={isCheckingUnlock}
+                            onClick={manualUnlockCheck} disabled={isCheckingUnlock}
                             className="w-full flex items-center justify-center gap-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-indigo-600/20 active:scale-95"
                         >
                             {isCheckingUnlock ? <Loader2 className="animate-spin" size={20}/> : <RefreshCw size={20}/>}
@@ -626,7 +560,6 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 </div>
             )}
 
-            {/* ⚠️ VIOLATION MODAL */}
             {showViolationModal && !isHardLocked && (
                 <div className="fixed inset-0 z-[100] bg-red-600/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
                     <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] max-w-md w-full text-center shadow-2xl border-4 border-red-500">
@@ -638,103 +571,6 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 </div>
             )}
 
-            {/* HEADER */}
-            <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
-                        <LayoutGrid size={18} />
-                    </div>
-                    <h1 className="font-bold text-base md:text-lg truncate">{exam?.title}</h1>
-                </div>
-
-                <div className="flex items-center gap-4">
-                    {violationCount > 0 && (
-                        <div className="hidden sm:flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-1 rounded-lg text-red-600 dark:text-red-400 animate-pulse">
-                            <ShieldAlert size={14} />
-                            <span className="text-[10px] font-black uppercase">Flags: {violationCount}</span>
-                        </div>
-                    )}
-                    <div className="hidden sm:flex items-center gap-1.5 text-xs font-bold">
-                        {syncStatus === 'saving' && <span className="text-slate-400 animate-pulse">Saving...</span>}
-                        {syncStatus === 'synced' && <span className="text-green-500 flex items-center gap-1"><Cloud size={14}/> Saved</span>}
-                        {syncStatus === 'offline_saved' && <span className="text-amber-500 flex items-center gap-1"><WifiOff size={14}/> Offline</span>}
-                    </div>
-                    <div className={`flex items-center gap-2 font-mono font-bold px-4 py-1.5 rounded-lg border text-sm ${timeLeft < 300 ? 'bg-red-50 text-red-600 animate-pulse border-red-200' : 'bg-slate-100 dark:bg-slate-800 dark:border-slate-700'}`}>
-                        <Clock size={16} /> {formatTime(timeLeft)}
-                    </div>
-                </div>
-            </header>
-
-            <div className={`flex-1 flex flex-col md:flex-row min-h-0 transition-all duration-500 ${violationCount > 0 ? 'ring-inset ring-4 ring-red-500/5' : ''}`}>
-                <main className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#0b0f19]">
-                    <div className="flex-1 overflow-y-auto p-6 md:p-10 w-full mx-auto max-w-4xl">
-                        {violationCount > 0 && (
-                            <div className="mb-6 p-3 bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-xl flex items-center gap-3 animate-in slide-in-from-top-2">
-                                <AlertTriangle size={16} className="text-red-500" />
-                                <p className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest">Integrity monitor flagged focus loss. Faculty notified.</p>
-                            </div>
-                        )}
-                        <div className="flex justify-between items-center mb-8">
-                            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Question {currentIdx + 1} / {decryptedAndShuffledQuestions.length}</span>
-                            <div className="flex gap-2">
-                                {hasAnswer && <button onClick={() => handleClearSelection(currentQ.question_id)} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:text-red-600 hover:bg-red-50 transition-all"><Eraser size={14} /> Clear</button>}
-                                <button onClick={() => toggleFlag(currentQ.question_id)} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${isFlagged ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20' : 'border-slate-200 dark:border-slate-800 text-slate-500'}`}><Flag size={14} className={isFlagged ? 'fill-amber-500' : ''}/> {isFlagged ? 'Flagged' : 'Flag'}</button>
-                            </div>
-                        </div>
-
-                        <h2 className="text-lg md:text-xl font-bold text-slate-800 dark:text-white mb-8 leading-relaxed">{currentQ.question_text}</h2>
-                        
-                        <div className="space-y-3 pb-8">
-                            {currentQ.options?.map((opt, i) => {
-                                const selected = answers[currentQ.question_id] === opt;
-                                return (
-                                    <div key={i} onClick={() => handleOptionSelect(currentQ.question_id, opt)} className={`w-full p-4 md:p-5 rounded-2xl border-2 cursor-pointer transition-all flex items-center gap-4 group ${selected ? 'border-indigo-600 bg-indigo-50/50 dark:border-indigo-500 dark:bg-indigo-500/10' : 'border-slate-200 dark:border-slate-800 hover:border-indigo-300'}`}>
-                                        <div className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 group-hover:border-indigo-400'}`}>
-                                            {selected && <div className="w-2 h-2 bg-white rounded-full" />}
-                                        </div>
-                                        <span className={`text-sm md:text-base ${selected ? 'font-bold text-indigo-900 dark:text-indigo-100' : 'text-slate-700 dark:text-slate-300'}`}>{opt}</span>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-
-                    {/* NAV FOOTER */}
-                    <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 p-4">
-                        <div className="max-w-4xl mx-auto flex justify-between">
-                            <button onClick={() => setCurrentIdx(prev => Math.max(0, prev - 1))} disabled={currentIdx === 0} className="px-6 py-2.5 rounded-xl border font-bold disabled:opacity-30">Previous</button>
-                            {currentIdx === decryptedAndShuffledQuestions.length - 1 ? (
-                                <button onClick={() => setShowConfirm(true)} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-600/20 active:scale-95 transition-all">Submit Exam</button>
-                            ) : (
-                                <button onClick={() => setCurrentIdx(prev => Math.min(decryptedAndShuffledQuestions.length - 1, prev + 1))} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold active:scale-95 transition-all">Next Question</button>
-                            )}
-                        </div>
-                    </div>
-                </main>
-
-                {/* SIDEBAR NAVIGATOR */}
-                <aside className="w-full md:w-72 bg-slate-50 dark:bg-slate-900 border-t md:border-t-0 md:border-l border-slate-200 dark:border-slate-800 flex flex-col shrink-0">
-                    <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                        <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Navigator</h3>
-                        <span className="text-xs font-bold text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-md">{Object.keys(answers).length} / {decryptedAndShuffledQuestions.length}</span>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-4">
-                        <div className="grid grid-cols-6 md:grid-cols-5 gap-2">
-                            {decryptedAndShuffledQuestions.map((q, i) => (
-                                <button key={q.question_id} onClick={() => setCurrentIdx(i)} className={`w-9 h-9 md:w-10 md:h-10 rounded-lg border flex items-center justify-center text-xs font-bold transition-all relative ${currentIdx === i ? 'ring-2 ring-indigo-400 ring-offset-2 dark:ring-offset-slate-900 z-10' : ''} ${answers[q.question_id] ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'}`}>
-                                    {i + 1}
-                                    {flagged.has(q.question_id) && <div className="absolute -top-1 -right-1 w-3 h-3 bg-amber-500 border-2 border-white dark:border-slate-900 rounded-full" />}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                    <div className="p-4 border-t border-slate-200 dark:border-slate-800 hidden md:block">
-                        <button onClick={() => setShowConfirm(true)} className="w-full py-3 rounded-xl bg-slate-200/50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-sm">Finish Exam</button>
-                    </div>
-                </aside>
-            </div>
-
-            {/* CONFIRMATION MODAL */}
             {showConfirm && (
                 <div className="fixed inset-0 z-[120] bg-slate-950/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
                     <div className="bg-white dark:bg-slate-900 p-8 rounded-[32px] max-w-sm w-full text-center shadow-2xl border border-slate-200 dark:border-slate-800">
@@ -746,6 +582,107 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                     </div>
                 </div>
             )}
-        </div>
+        </>
     );
-}
+};
+
+const ExamHeader = ({ examTitle, violationCount, syncStatus, timeLeft, formatTime }) => (
+    <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
+        <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                <LayoutGrid size={18} />
+            </div>
+            <h1 className="font-bold text-base md:text-lg truncate">{examTitle}</h1>
+        </div>
+        <div className="flex items-center gap-4">
+            {violationCount > 0 && (
+                <div className="hidden sm:flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-1 rounded-lg text-red-600 dark:text-red-400 animate-pulse">
+                    <ShieldAlert size={14} />
+                    <span className="text-[10px] font-black uppercase">Flags: {violationCount}</span>
+                </div>
+            )}
+            <div className="hidden sm:flex items-center gap-1.5 text-xs font-bold">
+                {syncStatus === 'saving' && <span className="text-slate-400 animate-pulse">Saving...</span>}
+                {syncStatus === 'synced' && <span className="text-green-500 flex items-center gap-1"><Cloud size={14}/> Saved</span>}
+                {syncStatus === 'offline_saved' && <span className="text-amber-500 flex items-center gap-1"><WifiOff size={14}/> Offline</span>}
+            </div>
+            <div className={`flex items-center gap-2 font-mono font-bold px-4 py-1.5 rounded-lg border text-sm ${timeLeft < 300 ? 'bg-red-50 text-red-600 animate-pulse border-red-200' : 'bg-slate-100 dark:bg-slate-800 dark:border-slate-700'}`}>
+                <Clock size={16} /> {formatTime(timeLeft)}
+            </div>
+        </div>
+    </header>
+);
+
+const QuestionPanel = ({ currentQ, currentIdx, totalQs, answers, flagged, violationCount, handleOptionSelect, handleClearSelection, toggleFlag, setCurrentIdx, setShowConfirm }) => {
+    const isFlagged = flagged.has(currentQ?.question_id);
+    const hasAnswer = !!answers[currentQ?.question_id];
+
+    return (
+        <main className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#0b0f19]">
+            <div className="flex-1 overflow-y-auto p-6 md:p-10 w-full mx-auto max-w-4xl">
+                {violationCount > 0 && (
+                    <div className="mb-6 p-3 bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-xl flex items-center gap-3 animate-in slide-in-from-top-2">
+                        <AlertTriangle size={16} className="text-red-500" />
+                        <p className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest">Integrity monitor flagged focus loss. Faculty notified.</p>
+                    </div>
+                )}
+                <div className="flex justify-between items-center mb-8">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Question {currentIdx + 1} / {totalQs}</span>
+                    <div className="flex gap-2">
+                        {hasAnswer && <button onClick={() => handleClearSelection(currentQ.question_id)} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:text-red-600 hover:bg-red-50 transition-all"><Eraser size={14} /> Clear</button>}
+                        <button onClick={() => toggleFlag(currentQ.question_id)} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${isFlagged ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20' : 'border-slate-200 dark:border-slate-800 text-slate-500'}`}><Flag size={14} className={isFlagged ? 'fill-amber-500' : ''}/> {isFlagged ? 'Flagged' : 'Flag'}</button>
+                    </div>
+                </div>
+
+                <h2 className="text-lg md:text-xl font-bold text-slate-800 dark:text-white mb-8 leading-relaxed">{currentQ?.question_text}</h2>
+                
+                <div className="space-y-3 pb-8">
+                    {currentQ?.options?.map((opt, i) => {
+                        const selected = answers[currentQ.question_id] === opt;
+                        return (
+                            <div key={i} onClick={() => handleOptionSelect(currentQ.question_id, opt)} className={`w-full p-4 md:p-5 rounded-2xl border-2 cursor-pointer transition-all flex items-center gap-4 group ${selected ? 'border-indigo-600 bg-indigo-50/50 dark:border-indigo-500 dark:bg-indigo-500/10' : 'border-slate-200 dark:border-slate-800 hover:border-indigo-300'}`}>
+                                <div className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 group-hover:border-indigo-400'}`}>
+                                    {selected && <div className="w-2 h-2 bg-white rounded-full" />}
+                                </div>
+                                <span className={`text-sm md:text-base ${selected ? 'font-bold text-indigo-900 dark:text-indigo-100' : 'text-slate-700 dark:text-slate-300'}`}>{opt}</span>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 p-4">
+                <div className="max-w-4xl mx-auto flex justify-between">
+                    <button onClick={() => setCurrentIdx(prev => Math.max(0, prev - 1))} disabled={currentIdx === 0} className="px-6 py-2.5 rounded-xl border font-bold disabled:opacity-30">Previous</button>
+                    {currentIdx === totalQs - 1 ? (
+                        <button onClick={() => setShowConfirm(true)} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-600/20 active:scale-95 transition-all">Submit Exam</button>
+                    ) : (
+                        <button onClick={() => setCurrentIdx(prev => Math.min(totalQs - 1, prev + 1))} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold active:scale-95 transition-all">Next Question</button>
+                    )}
+                </div>
+            </div>
+        </main>
+    );
+};
+
+const SidebarNavigator = ({ questions, currentIdx, answers, flagged, setCurrentIdx, setShowConfirm }) => (
+    <aside className="w-full md:w-72 bg-slate-50 dark:bg-slate-900 border-t md:border-t-0 md:border-l border-slate-200 dark:border-slate-800 flex flex-col shrink-0">
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
+            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Navigator</h3>
+            <span className="text-xs font-bold text-indigo-600 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded-md">{Object.keys(answers).length} / {questions.length}</span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+            <div className="grid grid-cols-6 md:grid-cols-5 gap-2">
+                {questions.map((q, i) => (
+                    <button key={q.question_id} onClick={() => setCurrentIdx(i)} className={`w-9 h-9 md:w-10 md:h-10 rounded-lg border flex items-center justify-center text-xs font-bold transition-all relative ${currentIdx === i ? 'ring-2 ring-indigo-400 ring-offset-2 dark:ring-offset-slate-900 z-10' : ''} ${answers[q.question_id] ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'}`}>
+                        {i + 1}
+                        {flagged.has(q.question_id) && <div className="absolute -top-1 -right-1 w-3 h-3 bg-amber-500 border-2 border-white dark:border-slate-900 rounded-full" />}
+                    </button>
+                ))}
+            </div>
+        </div>
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800 hidden md:block">
+            <button onClick={() => setShowConfirm(true)} className="w-full py-3 rounded-xl bg-slate-200/50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-sm">Finish Exam</button>
+        </div>
+    </aside>
+);

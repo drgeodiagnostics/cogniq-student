@@ -27,7 +27,11 @@ const AnnouncementCard = ({ a, currentUserId }) => {
                 setLiked(true);
                 await supabase
                     .from('announcement_likes')
-                    .insert({ announcement_id: a.id, student_id: currentUserId });
+                    .insert({ 
+                        announcement_id: a.id, 
+                        student_id: currentUserId,
+                        org_id: a.org_id // 🚀 SECURE: Pass the org_id down from the announcement
+                    });
             }
         } catch (error) {
             console.error("Failed to acknowledge:", error);
@@ -156,14 +160,35 @@ const DashboardView = ({ data, refresh, currentUserId }) => {
                     ) : (
                         <div className="space-y-4">
                             {myClassrooms.map(c => (
-                                <div key={c.classroom_id} className="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[24px] shadow-sm flex items-center gap-4 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors group">
-                                    <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center text-indigo-600 dark:text-indigo-400 font-black text-lg border border-indigo-100 dark:border-indigo-800/50 group-hover:scale-105 transition-transform shrink-0">
+                                <div 
+                                    key={c.classroom_id} 
+                                    className={`p-5 bg-white dark:bg-slate-900 border rounded-[24px] shadow-sm flex items-center gap-4 transition-all group ${
+                                        c.is_suspended 
+                                        ? 'border-red-100 dark:border-red-900/30 opacity-80' 
+                                        : 'border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-700'
+                                    }`}
+                                >
+                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg border shrink-0 transition-transform ${
+                                        c.is_suspended 
+                                        ? 'bg-red-50 text-red-500 border-red-100 dark:bg-red-900/20 dark:border-red-800/50' 
+                                        : 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-800/50 group-hover:scale-105'
+                                    }`}>
                                         {c.name.substring(0, 1).toUpperCase()}
                                     </div>
-                                    <div className="min-w-0">
-                                        <span className="font-black text-slate-800 dark:text-slate-100 text-lg block leading-none mb-1 truncate">
-                                            {c.name}
-                                        </span>
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center justify-between gap-2 mb-1">
+                                            <span className={`font-black text-lg block leading-none truncate ${
+                                                c.is_suspended ? 'text-slate-500 dark:text-slate-400' : 'text-slate-800 dark:text-slate-100'
+                                            }`}>
+                                                {c.name}
+                                            </span>
+                                            {/* 🚨 THE RED SUSPENDED BADGE */}
+                                            {c.is_suspended && (
+                                                <span className="text-[9px] font-black text-red-600 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded border border-red-100 dark:border-red-900/30 uppercase tracking-widest shrink-0">
+                                                    Suspended
+                                                </span>
+                                            )}
+                                        </div>
                                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                                             ID: {c.classroom_id.substring(0,8)}
                                         </span>

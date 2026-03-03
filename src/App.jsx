@@ -86,14 +86,12 @@ function App() {
         return; 
     }
 
-    // 1. Organization Check (Existing)
     if (userProfile.org_master?.status === 'suspended') {
       alert(`🚫 SERVICE PAUSED\n\n${userProfile.org_master.name} is temporarily suspended.`);
       await supabase.auth.signOut(); 
       return;
     }
 
-    // 🚀 2. INDIVIDUAL SUSPENSION CHECK (Add this now)
     if (userProfile.is_suspended === true) {
       alert("🚫 ACCESS DENIED\n\nYour account has been suspended by the administration.");
       await supabase.auth.signOut();
@@ -102,10 +100,10 @@ function App() {
     }
     
     setProfile(userProfile);
-    checkDeviceStatus(userId);
+    checkDeviceStatus(userId, userProfile.org_id);
   };
 
-  const checkDeviceStatus = async (uid) => { 
+  const checkDeviceStatus = async (uid, orgId) => { 
     try {
         const info = await Device.getId(); 
         const did = info.uuid || info.identifier; 
@@ -119,7 +117,7 @@ function App() {
                 setDeviceStatus('pending'); 
             } else { 
                 setDeviceStatus('approved'); 
-                fetchDashboardData(uid); 
+                fetchDashboardData(uid, orgId); 
             } 
         } else {
             const modelInfo = await Device.getInfo();
@@ -131,29 +129,40 @@ function App() {
         } 
     } catch (e) {
         if (STRICT_DEVICE_MODE) { setDeviceStatus('blocked'); alert("Security Error: Device verification failed."); } 
-        else { setDeviceStatus('approved'); fetchDashboardData(uid); }
+        else { setDeviceStatus('approved'); fetchDashboardData(uid, orgId); }
     }
     setLoading(false); 
   };
 
-  const fetchDashboardData = async (uid = session?.user?.id, silent = false) => { 
-    if(!uid) return;
+  const fetchDashboardData = async (uid = session?.user?.id, orgId = profile?.org_id, silent = false) => { 
+    if(!uid || !orgId) return;
     if (!silent) setLoading(true); 
     
     try {
-        const { data: enrollments } = await supabase.from('classroom_enrollments').select('classroom_id, classroom_master(name, org_id)').eq('student_id', uid);
+        const { data: enrollments } = await supabase
+            .from('classroom_enrollments')
+            .select('classroom_id, is_suspended, classroom_master(name, org_id)') 
+            .eq('student_id', uid)
+            .eq('org_id', orgId); 
+
         if (!enrollments || enrollments.length === 0) { 
             setDashboardData({ myClassrooms: [], availableExams: [], announcements: [], myMentor: null, pastExams: [] });
             setLoading(false); return; 
         }
 
         const classIds = enrollments.map(e => e.classroom_id);
-        const myClassrooms = enrollments.map(e => ({ ...e.classroom_master, classroom_id: e.classroom_id })).filter(Boolean);
+        
+        const myClassrooms = enrollments.map(e => ({ 
+            ...e.classroom_master, 
+            classroom_id: e.classroom_id,
+            is_suspended: e.is_suspended 
+        })).filter(Boolean);
 
         const { data: rawSubmissions } = await supabase
             .from('exam_submissions')
             .select('submission_id, exam_id, score, total_marks, status, submitted_at, answers, exam_master(title, classroom_master(name), questions:question_bank(*))') 
-            .eq('student_id', uid);
+            .eq('student_id', uid)
+            .eq('org_id', orgId); 
         
         // 🛡️ FAULT-TOLERANT SQB DECRYPTION ENGINE
         const decryptedSubmissions = (rawSubmissions || []).map(sub => {
@@ -197,36 +206,36 @@ function App() {
             return safeSub;
         });
         
-        const completedExamIds = new Set(decryptedSubmissions.filter(s => s.status === 'published' || s.status === 'pending').map(s => s.exam_id));
+        // 🚀 SMART FILTER: Hide fully completed exams from the available list
+        const completedExamIds = new Set(
+            (decryptedSubmissions || [])
+            .filter(s => s.status === 'published' || s.status === 'pending')
+            .map(s => s.exam_id)
+        );
         
-        // 🚀 AUTO-PUBLISH FLAG FETCHED HERE
         const { data: deployments } = await supabase.from('exam_deployments')
             .select(`deployment_id, scheduled_at, duration_minutes, status, auto_publish_results, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
             .in('classroom_id', classIds)
-            .in('status', ['scheduled', 'live', 'LIVE', 'DEPLOYED', 'deployed']) 
+            .in('status', ['scheduled', 'live', 'LIVE', 'DEPLOYED', 'deployed'])
+            .eq('org_id', orgId) 
             .order('scheduled_at', { ascending: true });
         
         const availableExams = (deployments || []).filter(d => d.exam && !completedExamIds.has(d.exam.exam_id));
 
-        // 🚀 FETCH ANNOUNCEMENTS WITH METADATA & LIKES
-const { data: announcements } = await supabase
-    .from('announcements')
-    .select(`
-        *, 
-        faculty:user_master(full_name), 
-        classroom:classroom_master(name),
-        likes:announcement_likes(student_id)
-    `)
-    .in('classroom_id', classIds)
-    .order('created_at', { ascending: false })
-    .limit(10);
+        const { data: announcements } = await supabase
+            .from('announcements')
+            .select(`*, faculty:user_master(full_name), classroom:classroom_master(name), likes:announcement_likes(student_id)`)
+            .in('classroom_id', classIds)
+            .eq('org_id', orgId) 
+            .order('created_at', { ascending: false })
+            .limit(10);
 
         const { data: mentorData } = await supabase.from('mentorship_assignments').select('mentor_id, user:mentor_id(full_name, email)').eq('mentee_id', uid).maybeSingle();
 
         setDashboardData({
             myClassrooms,
             availableExams,
-            pastExams: decryptedSubmissions || [],
+            pastExams: Array.from(new Map((decryptedSubmissions || []).map(s => [s.submission_id, s])).values()),
             announcements: announcements || [],
             myMentor: mentorData?.user || null
         });
@@ -238,7 +247,6 @@ const { data: announcements } = await supabase
     }
   };
 
-  // --- JIT EXAM ENGINE ---
   const startExam = async (deployment) => {
       setLoading(true);
       try {
@@ -250,12 +258,12 @@ const { data: announcements } = await supabase
 
           if (error) throw new Error("RLS Block: " + error.message);
           
-          // 🚀 ADD FLAG TO CURRENT EXAM STATE
           setCurrentExam({ 
               ...deployment.exam, 
               deployment_id: deployment.deployment_id,
               duration_minutes: deployment.duration_minutes,
-              auto_publish_results: deployment.auto_publish_results 
+              auto_publish_results: deployment.auto_publish_results,
+              org_id: profile.org_id 
           }); 
           
           setExamQuestions(qData || []); 
@@ -282,12 +290,10 @@ const { data: announcements } = await supabase
       return tiers[currentTier] >= tiers[requiredTier];
   };
 
-  // --- RENDER PIPELINE ---
   if (!session) return <LoginScreen />;
   if (loading || !profile) return <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center"><div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
-  if (deviceStatus !== 'approved') return <DeviceGuard status={deviceStatus} sessionUser={session.user} onRefresh={() => checkDeviceStatus(session.user.id)} strictMode={STRICT_DEVICE_MODE} />;
+  if (deviceStatus !== 'approved') return <DeviceGuard status={deviceStatus} sessionUser={session.user} onRefresh={() => checkDeviceStatus(session.user.id, profile.org_id)} strictMode={STRICT_DEVICE_MODE} />;
 
-  // 🚀 FIXED: ADDED RETURN STATEMENT HERE
   if (view === 'taking_exam') {
     return (
         <ActiveExamInterface 
@@ -296,26 +302,61 @@ const { data: announcements } = await supabase
             studentId={session.user.id} 
             isPWA={isPWA}
             onComplete={async (score, total, answers) => { 
+                if (loading) return; 
+                setLoading(true); 
                 
-                // 🚀 CHECK THE AUTO-PUBLISH FLAG
+                const examId = currentExam.exam_id;
                 const finalStatus = currentExam.auto_publish_results ? 'published' : 'pending';
 
-                await supabase.from('exam_submissions').insert([{ 
-                    exam_id: currentExam.exam_id,
-                    student_id: session.user.id,
-                    score: score, 
-                    total_marks: total, 
-                    status: finalStatus, // <-- Dynamic Status Applied
-                    answers: answers,
-                    submitted_at: new Date().toISOString()
-                }]);
+                try {
+                    // 🚀 THE FIX: Use update() to overwrite the 'in_progress' row
+                    const { error } = await supabase
+                        .from('exam_submissions')
+                        .update({ 
+                            score: score, 
+                            total_marks: total, 
+                            status: finalStatus,
+                            answers: answers,
+                            submitted_at: new Date().toISOString(),
+                            is_locked: false // Force unlock on completion
+                        })
+                        .eq('exam_id', examId)
+                        .eq('student_id', session.user.id);
 
-                setCurrentExam(null); 
-                setExamQuestions([]);
-                alert(finalStatus === 'published' ? "Submission Successful! Results are available." : "Submission Successful! Results pending release.");
-                fetchDashboardData(session.user.id); 
-                setView('dashboard'); 
-            }} 
+                    // If it errors because the row magically didn't exist, we fall back to insert
+                    if (error) {
+                        console.warn("Update failed, attempting insert fallback...", error);
+                        const insertRes = await supabase.from('exam_submissions').insert([{ 
+                            exam_id: examId, student_id: session.user.id, org_id: profile.org_id,
+                            score, total_marks: total, status: finalStatus, answers, submitted_at: new Date().toISOString()
+                        }]);
+                        if (insertRes.error && insertRes.error.code !== '23505') throw insertRes.error;
+                    }
+
+                    // 🚀 SYNC FIX 1: Local EVICTION (Instantly hides "Start Exam")
+                    setDashboardData(prev => ({
+                        ...prev,
+                        availableExams: prev.availableExams.filter(ex => ex.exam?.exam_id !== examId)
+                    }));
+
+                    setCurrentExam(null); 
+                    setExamQuestions([]);
+                    setView('dashboard'); 
+                    
+                    alert(finalStatus === 'published' ? "Submission Successful!" : "Submission Successful! Results pending.");
+
+                    // 🚀 SYNC FIX 2: Indexing Delay 
+                    setTimeout(async () => {
+                        await fetchDashboardData(session.user.id, profile.org_id, true);
+                        setLoading(false);
+                    }, 1200);
+
+                } catch (err) {
+                    console.error("Submission Error:", err);
+                    alert("Submission failed: " + err.message);
+                    setLoading(false);
+                }
+            }}
         />
     );
   }
@@ -335,32 +376,11 @@ const { data: announcements } = await supabase
         currentView={view}
         onUpdatePassword={handleUpdatePassword}
     >
-       {view === 'dashboard' && (
-    <DashboardView 
-        data={dashboardData} 
-        refresh={() => fetchDashboardData()} 
-        currentUserId={session.user.id}  // 👈 ADD THIS LINE
-    />
-)}
-       
-       {view === 'exams' && (
-          <ExamsView 
-            availableExams={dashboardData.availableExams} 
-            pastExams={dashboardData.pastExams} 
-            onStart={startExam} 
-            studentId={session.user.id} 
-            onRefresh={() => fetchDashboardData(session.user.id, true)}
-          />
-       )}
-       
+       {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData(session.user.id, profile.org_id)} currentUserId={session.user.id} />}
+       {view === 'exams' && <ExamsView availableExams={dashboardData.availableExams} pastExams={dashboardData.pastExams} onStart={startExam} studentId={session.user.id} onRefresh={() => fetchDashboardData(session.user.id, profile.org_id, true)} />}
        {view === 'profile' && <ProfileView profile={profile} onUpdatePassword={handleUpdatePassword} />}
-       
-       {/* 🚀 FIXED: PASSED SESSION PROP TO ATLASVIEW FOR SYNCING */}
-       {view === 'atlas' && hasAccess('standard') && <AtlasView session={session} />}
-       {view === 'atlas' && !hasAccess('standard') && <PremiumLockedScreen feature="Study Atlas" />}
-       
-       {view === 'mentorship' && hasAccess('enterprise') && <MentorshipView mentor={dashboardData.myMentor} />}
-       {view === 'mentorship' && !hasAccess('enterprise') && <PremiumLockedScreen feature="Mentorship" />}
+       {view === 'atlas' && (hasAccess('standard') ? <AtlasView session={session} /> : <PremiumLockedScreen feature="Study Atlas" />)}
+       {view === 'mentorship' && (hasAccess('enterprise') ? <MentorshipView mentor={dashboardData.myMentor} /> : <PremiumLockedScreen feature="Mentorship" />)}
     </StudentDashboardLayout>
   );
 }

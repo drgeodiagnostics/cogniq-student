@@ -3,7 +3,7 @@ import { ReactFlow, Background, Controls, Handle, Position, applyNodeChanges, ap
 import '@xyflow/react/dist/style.css';
 import { hierarchy, tree } from 'd3-hierarchy';
 import { Info, ZoomIn, X, ChevronDown, ChevronUp, Plus, Minus, CheckCircle2 } from 'lucide-react';
-import { supabase } from '../../supabaseClient'; // 🚀 Added Supabase import
+import { supabase } from '../../supabaseClient'; 
 
 // --- THE D3 TO REACT-FLOW LAYOUT ENGINE ---
 const getLayoutedElements = (rawData, expandedIds, onToggleNode, reviewedNodes) => {
@@ -42,7 +42,7 @@ const getLayoutedElements = (rawData, expandedIds, onToggleNode, reviewedNodes) 
                 id: String(node.data.id),
                 position: { x: node.y, y: node.x },
                 data: { 
-                    id: String(node.data.id), // Passed ID into data for the sidebar
+                    id: String(node.data.id), 
                     label: node.data.text || node.data.label || 'Concept',
                     note: node.data.note,
                     image: node.data.image,
@@ -50,7 +50,7 @@ const getLayoutedElements = (rawData, expandedIds, onToggleNode, reviewedNodes) 
                     level: node.data.level,
                     hasChildren: node.data.hasChildren,
                     isCollapsed: node.data.isCollapsed,
-                    isReviewed: reviewedNodes.has(String(node.data.id)), // 🚀 Pass Review Status
+                    isReviewed: reviewedNodes.has(String(node.data.id)), 
                     onToggle: () => onToggleNode(node.data.id) 
                 },
                 type: 'customNode',
@@ -99,7 +99,6 @@ const CustomNode = ({ data }) => {
     return (
         <div className={`relative px-4 py-2 rounded-xl shadow-sm transition-transform hover:scale-105 hover:shadow-md min-w-[150px] text-center ${bgClass} ${textClass} ${borderClass}`}>
             
-            {/* 🚀 VISUAL MASTERY BADGE */}
             {data.isReviewed && (
                 <div className="absolute -top-2 -left-2 bg-green-500 text-white rounded-full p-0.5 shadow-sm border-2 border-white dark:border-slate-900 z-20">
                     <CheckCircle2 size={12} strokeWidth={3} />
@@ -129,7 +128,8 @@ const CustomNode = ({ data }) => {
 };
 
 // --- MAIN COMPONENT ---
-export default function InteractiveMindMap({ mapData, studentId, mapId }) {
+// 🚀 ADDED orgId TO PROPS
+export default function InteractiveMindMap({ mapData, studentId, mapId, orgId }) {
     
     const activeData = useMemo(() => {
         const raw = mapData || fallbackData;
@@ -150,13 +150,12 @@ export default function InteractiveMindMap({ mapData, studentId, mapId }) {
     }, [mapData]);
 
     const [expandedIds, setExpandedIds] = useState(new Set());
-    const [reviewedNodes, setReviewedNodes] = useState(new Set()); // 🚀 NEW: Progress Tracking State
+    const [reviewedNodes, setReviewedNodes] = useState(new Set()); 
     const [nodes, setNodes] = useState([]);
     const [edges, setEdges] = useState([]);
     const [activeNode, setActiveNode] = useState(null); 
     const [isMinimized, setIsMinimized] = useState(false);
 
-    // 🚀 NEW: Fetch Progress from Supabase
     useEffect(() => {
         if (!studentId || !mapId) return;
         const fetchProgress = async () => {
@@ -173,16 +172,16 @@ export default function InteractiveMindMap({ mapData, studentId, mapId }) {
         fetchProgress();
     }, [studentId, mapId]);
 
-    // 🚀 NEW: Handle Marking a Node as Reviewed
     const handleMarkReviewed = async (nodeId) => {
         if (!studentId || !mapId || !nodeId) return;
 
         // Optimistic UI Update
         setReviewedNodes(prev => new Set(prev).add(nodeId));
 
-        // Background Sync
+        // 🚀 SECURED: Passed org_id to the database insert!
         await supabase.from('flashcard_progress').upsert({
             student_id: studentId,
+            org_id: orgId, // <-- The missing link!
             deck_id: mapId,
             card_id: nodeId,
             status: 'reviewed',
@@ -207,7 +206,6 @@ export default function InteractiveMindMap({ mapData, studentId, mapId }) {
         });
     }, []);
 
-    // 🚀 Pass reviewedNodes to layout engine
     useEffect(() => {
         if (!activeData) return;
         const { initialNodes, initialEdges } = getLayoutedElements(activeData, expandedIds, toggleNode, reviewedNodes);
@@ -290,7 +288,7 @@ export default function InteractiveMindMap({ mapData, studentId, mapId }) {
                                 )}
                             </div>
 
-                            {/* 🚀 NEW: MARK AS UNDERSTOOD BUTTON */}
+                            {/* 🚀 MARK AS UNDERSTOOD BUTTON */}
                             {studentId && mapId && (
                                 <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700 shrink-0">
                                     <button
