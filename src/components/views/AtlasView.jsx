@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../supabaseClient';
 import InteractiveMindMap from '../layout/InteractiveMindMap'; 
-import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2, Users, Book } from 'lucide-react';
+import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2, Users, Book, RefreshCw } from 'lucide-react';
 
 const AtlasView = ({ session }) => {
     const [activeTab, setActiveTab] = useState('flashcards');
@@ -11,6 +11,7 @@ const AtlasView = ({ session }) => {
     const [classMap, setClassMap] = useState({});
     const [orgId, setOrgId] = useState(null); 
     const [loading, setLoading] = useState(true);
+    const [isBackgroundSyncing, setIsBackgroundSyncing] = useState(false); 
     
     // 🛡️ PROGRESS & UI STATE ENGINE
     const [flippedCards, setFlippedCards] = useState({}); 
@@ -18,140 +19,148 @@ const AtlasView = ({ session }) => {
     const [expandedChapters, setExpandedChapters] = useState({});
     const [expandedClassrooms, setExpandedClassrooms] = useState({});
 
-// 1. DATA FETCHING ENGINE
-    useEffect(() => {
-        const fetchAtlasData = async () => {
-            if (!session?.user?.id) return;
-            setLoading(true);
+    // 1. DATA FETCHING ENGINE (Now a reusable callback)
+    const fetchAtlasData = useCallback(async (isSilentRefresh = false) => {
+        if (!session?.user?.id) return;
+        
+        // Only show full loading screen on first load
+        if (!isSilentRefresh) setLoading(true);
+        else setIsBackgroundSyncing(true);
+        
+        try {
+            const { data: userProfile } = await supabase
+                .from('user_master')
+                .select('org_id')
+                .eq('user_id', session.user.id)
+                .single();
             
-            try {
-                // 1. Fetch the student's org_id
-                const { data: userProfile } = await supabase
-                    .from('user_master')
-                    .select('org_id')
-                    .eq('user_id', session.user.id)
-                    .single();
-                
-                const fetchedOrgId = userProfile?.org_id;
-                setOrgId(fetchedOrgId);
+            const fetchedOrgId = userProfile?.org_id;
+            setOrgId(fetchedOrgId);
 
-                // 2. Fetch Enrollments (🚀 SHIELD ACTIVATED: IGNORES SUSPENDED USERS)
-                const { data: enrollments } = await supabase
-                    .from('classroom_enrollments')
-                    .select('classroom_id, classroom_master(name, subject)')
-                    .eq('student_id', session.user.id)
-                    .eq('is_suspended', false);
-                
-                const myClassIds = [];
-                const cMap = {};
-                (enrollments || []).forEach(e => {
-                    myClassIds.push(e.classroom_id);
-                    if (e.classroom_master) {
-                        cMap[e.classroom_id] = {
-                            name: e.classroom_master.name,
-                            subject: e.classroom_master.subject || 'General Studies'
-                        };
+            const { data: enrollments } = await supabase
+                .from('classroom_enrollments')
+                .select('classroom_id, classroom_master(name, subject)')
+                .eq('student_id', session.user.id)
+                .eq('is_suspended', false);
+            
+            const myClassIds = [];
+            const cMap = {};
+            (enrollments || []).forEach(e => {
+                myClassIds.push(e.classroom_id);
+                if (e.classroom_master) {
+                    cMap[e.classroom_id] = {
+                        name: e.classroom_master.name,
+                        subject: e.classroom_master.subject || 'General Studies'
+                    };
+                }
+            });
+
+            if (myClassIds.length === 0 || !fetchedOrgId) {
+                setFlashcards([]); setMindmaps([]); setDeployments([]); setClassMap({});
+                setLoading(false); setIsBackgroundSyncing(false); return;
+            }
+
+            const { data: deploymentData } = await supabase
+                .from('material_deployments')
+                .select('material_type, material_reference_id, classroom_id')
+                .eq('org_id', fetchedOrgId)
+                .in('classroom_id', myClassIds);
+            
+            const authorizedFlashcardFolders = [...new Set((deploymentData || []).filter(d => d.material_type === 'flashcard_folder').map(d => d.material_reference_id))];
+            const authorizedMindmapFolders = [...new Set((deploymentData || []).filter(d => d.material_type === 'mindmap_folder').map(d => d.material_reference_id))];
+
+            const authorizedFlashcardNames = [...new Set(authorizedFlashcardFolders.map(ref => ref.split('_').slice(1).join('_')))];
+            const authorizedMindmapNames = [...new Set(authorizedMindmapFolders.map(ref => ref.split('_').slice(1).join('_')))];
+
+            let allCards = [];
+            if (authorizedFlashcardNames.length > 0) {
+                let fetchMore = true;
+                let startIdx = 0;
+                const step = 1000;
+                let fullCardData = [];
+
+                while (fetchMore) {
+                    const { data: cardData } = await supabase
+                        .from('atlas_flashcards')
+                        .select('*')
+                        .eq('org_id', fetchedOrgId)
+                        .in('chapter', authorizedFlashcardNames)
+                        .range(startIdx, startIdx + step - 1);
+
+                    if (cardData && cardData.length > 0) {
+                        fullCardData = [...fullCardData, ...cardData];
+                        startIdx += step;
+                        if (cardData.length < step) fetchMore = false; 
+                    } else {
+                        fetchMore = false;
                     }
+                }
+                 
+                allCards = fullCardData.filter(card => {
+                    const uniqueRef = `${card.department_id}_${card.chapter}`;
+                    return authorizedFlashcardFolders.includes(uniqueRef);
                 });
+            }
 
-                if (myClassIds.length === 0 || !fetchedOrgId) {
-                    setFlashcards([]); setMindmaps([]); setDeployments([]); setClassMap({});
-                    setLoading(false); return;
-                }
+            let allMaps = [];
+            if (authorizedMindmapNames.length > 0) {
+                let fetchMore = true;
+                let startIdx = 0;
+                const step = 1000;
+                let fullMapData = [];
 
-                // 3. Fetch Authorized Folders from the Bridge Table
-                const { data: deploymentData } = await supabase
-                    .from('material_deployments')
-                    .select('material_type, material_reference_id, classroom_id')
-                    .eq('org_id', fetchedOrgId)
-                    .in('classroom_id', myClassIds);
-                
-                const authorizedFlashcardFolders = [...new Set((deploymentData || []).filter(d => d.material_type === 'flashcard_folder').map(d => d.material_reference_id))];
-                const authorizedMindmapFolders = [...new Set((deploymentData || []).filter(d => d.material_type === 'mindmap_folder').map(d => d.material_reference_id))];
-
-                // 🚀 4. OPTIMIZED FETCH WITH AUTO-PAGINATION
-                const authorizedFlashcardNames = [...new Set(authorizedFlashcardFolders.map(ref => ref.split('_').slice(1).join('_')))];
-                const authorizedMindmapNames = [...new Set(authorizedMindmapFolders.map(ref => ref.split('_').slice(1).join('_')))];
-
-                let allCards = [];
-                if (authorizedFlashcardNames.length > 0) {
-                    let fetchMore = true;
-                    let startIdx = 0;
-                    const step = 1000;
-                    let fullCardData = [];
-
-                    while (fetchMore) {
-                        const { data: cardData } = await supabase
-                            .from('atlas_flashcards')
-                            .select('*')
-                            .eq('org_id', fetchedOrgId)
-                            .in('chapter', authorizedFlashcardNames)
-                            .range(startIdx, startIdx + step - 1);
-
-                        if (cardData && cardData.length > 0) {
-                            fullCardData = [...fullCardData, ...cardData];
-                            startIdx += step;
-                            if (cardData.length < step) fetchMore = false; 
-                        } else {
-                            fetchMore = false;
-                        }
-                    }
-                     
-                    allCards = fullCardData.filter(card => {
-                        const uniqueRef = `${card.department_id}_${card.chapter}`;
-                        return authorizedFlashcardFolders.includes(uniqueRef);
-                    });
-                }
-
-                let allMaps = [];
-                if (authorizedMindmapNames.length > 0) {
-                    let fetchMore = true;
-                    let startIdx = 0;
-                    const step = 1000;
-                    let fullMapData = [];
-
-                    while (fetchMore) {
-                        const { data: mapData } = await supabase
-                            .from('atlas_mindmaps')
-                            .select('*')
-                            .eq('org_id', fetchedOrgId)
-                            .in('chapter', authorizedMindmapNames)
-                            .range(startIdx, startIdx + step - 1);
-                        
-                        if (mapData && mapData.length > 0) {
-                            fullMapData = [...fullMapData, ...mapData];
-                            startIdx += step;
-                            if (mapData.length < step) fetchMore = false;
-                        } else {
-                            fetchMore = false;
-                        }
-                    }
+                while (fetchMore) {
+                    const { data: mapData } = await supabase
+                        .from('atlas_mindmaps')
+                        .select('*')
+                        .eq('org_id', fetchedOrgId)
+                        .in('chapter', authorizedMindmapNames)
+                        .range(startIdx, startIdx + step - 1);
                     
-                    allMaps = fullMapData.filter(map => {
-                        const uniqueRef = `${map.department_id}_${map.chapter}`;
-                        return authorizedMindmapFolders.includes(uniqueRef);
-                    });
+                    if (mapData && mapData.length > 0) {
+                        fullMapData = [...fullMapData, ...mapData];
+                        startIdx += step;
+                        if (mapData.length < step) fetchMore = false;
+                    } else {
+                        fetchMore = false;
+                    }
                 }
+                
+                allMaps = fullMapData.filter(map => {
+                    const uniqueRef = `${map.department_id}_${map.chapter}`;
+                    return authorizedMindmapFolders.includes(uniqueRef);
+                });
+            }
 
-                // 5. FETCH CLOUD PROGRESS
-                const { data: progressData } = await supabase.from('flashcard_progress').select('card_id').eq('student_id', session.user.id);
-                if (progressData) setReviewedCards(new Set(progressData.map(p => p.card_id)));
+            const { data: progressData } = await supabase.from('flashcard_progress').select('card_id').eq('student_id', session.user.id);
+            if (progressData) setReviewedCards(new Set(progressData.map(p => p.card_id)));
 
-                // Save to state
-                setFlashcards(allCards);
-                setMindmaps(allMaps);
-                setDeployments(deploymentData || []);
-                setClassMap(cMap);
+            setFlashcards(allCards);
+            setMindmaps(allMaps);
+            setDeployments(deploymentData || []);
+            setClassMap(cMap);
 
-            } catch (error) {
-                console.error("Atlas Data Fetch Error:", error);
-            } finally {
-                setLoading(false);
+        } catch (error) {
+            console.error("Atlas Data Fetch Error:", error);
+        } finally {
+            setLoading(false);
+            setIsBackgroundSyncing(false);
+        }
+    }, [session]);
+
+    // 🚀 INITIAL LOAD & VISIBILITY CACHE BUSTER
+    useEffect(() => {
+        fetchAtlasData(false);
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                fetchAtlasData(true);
             }
         };
 
-        fetchAtlasData();
-    }, [session]);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }, [fetchAtlasData]);
 
     // 2. SILENT LOCAL STORAGE MIGRATION ENGINE
     useEffect(() => {
@@ -195,20 +204,18 @@ const AtlasView = ({ session }) => {
     const toggleFolder = (folderKey) => setExpandedChapters(prev => ({ ...prev, [folderKey]: !prev[folderKey] }));
     const toggleClassroom = (classId) => setExpandedClassrooms(prev => ({ ...prev, [classId]: prev[classId] === false ? true : false }));
 
-    // --- 🚀 THE NESTED GROUPING ENGINE (CLASSROOM -> FOLDER -> ITEMS) ---
+    // --- 🚀 THE NESTED GROUPING ENGINE ---
     const groupedFlashcards = useMemo(() => {
         const acc = {};
         deployments.filter(d => d.material_type === 'flashcard_folder').forEach(d => {
             const cId = d.classroom_id;
             const cInfo = classMap[cId] || { name: 'Unknown Classroom', subject: 'General' };
-            const fullRef = d.material_reference_id; // e.g. "deptId_Chapter 1"
+            const fullRef = d.material_reference_id; 
             
-            // Find cards that match this specific deployment uniqueRef
             const cardsInFolder = flashcards.filter(c => `${c.department_id}_${c.chapter}` === fullRef);
             
             if (cardsInFolder.length > 0) {
                 if (!acc[cId]) acc[cId] = { id: cId, name: cInfo.name, subject: cInfo.subject, folders: {} };
-                // Use the clean chapter name for the UI label
                 const cleanName = cardsInFolder[0].chapter; 
                 acc[cId].folders[cleanName] = cardsInFolder;
             }
@@ -237,21 +244,43 @@ const AtlasView = ({ session }) => {
     return (
         <div className="space-y-6 pb-20 animate-in fade-in">
             {/* Header Section */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
-                <div>
+            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6 bg-white dark:bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 relative overflow-hidden">
+                
+                {/* Silent Sync Indicator (Top Border Shimmer) */}
+                {isBackgroundSyncing && (
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500/0 via-indigo-500 to-indigo-500/0 animate-[shimmer_1.5s_infinite] origin-left" />
+                )}
+
+                <div className="flex-1">
                     <h1 className="text-2xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
                         <Layers size={24} className="text-indigo-500" /> Study Atlas
                     </h1>
                     <p className="text-sm text-slate-500 mt-1">Interactive review materials curated by your faculty.</p>
                 </div>
                 
-                {/* Tab Navigation */}
-                <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 w-full md:w-auto">
-                    <button onClick={() => setActiveTab('flashcards')} className={`flex-1 md:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'flashcards' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>
-                        Flashcards
-                    </button>
-                    <button onClick={() => setActiveTab('mindmaps')} className={`flex-1 md:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'mindmaps' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>
-                        Mind Maps
+                {/* 🚀 TAB NAVIGATION & MANUAL SYNC BUTTON */}
+                <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto shrink-0">
+                    <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0">
+                        <button onClick={() => setActiveTab('flashcards')} className={`flex-1 sm:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'flashcards' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>
+                            Flashcards
+                        </button>
+                        <button onClick={() => setActiveTab('mindmaps')} className={`flex-1 sm:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'mindmaps' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>
+                            Mind Maps
+                        </button>
+                    </div>
+
+                    {/* MANUAL REFRESH BUTTON */}
+                    <button 
+                        onClick={() => fetchAtlasData(true)}
+                        disabled={isBackgroundSyncing || loading}
+                        className={`w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border shadow-sm active:scale-95 shrink-0 ${
+                            isBackgroundSyncing || loading
+                            ? 'bg-indigo-50 text-indigo-600 border-indigo-200 dark:bg-indigo-900/30 dark:border-indigo-800 animate-pulse' 
+                            : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-400 hover:text-indigo-600'
+                        }`}
+                    >
+                        <RefreshCw size={14} className={isBackgroundSyncing || loading ? "animate-spin" : ""} />
+                        {isBackgroundSyncing || loading ? "Syncing..." : "Refresh Atlas"}
                     </button>
                 </div>
             </div>
