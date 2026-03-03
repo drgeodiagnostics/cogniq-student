@@ -191,13 +191,31 @@ const AtlasView = ({ session }) => {
     // --- INTERACTION HANDLERS ---
     const toggleFlip = async (card) => {
         setFlippedCards(prev => ({ ...prev, [card.id]: !prev[card.id] }));
+        
         if (!reviewedCards.has(card.id)) {
             setReviewedCards(prev => new Set(prev).add(card.id));
+            
+            const payload = {
+                student_id: session.user.id, 
+                org_id: orgId, 
+                deck_id: card.chapter || 'Uncategorized', 
+                card_id: card.id, 
+                status: 'reviewed', 
+                reviewed_at: new Date().toISOString()
+            };
+
             try {
-                await supabase.from('flashcard_progress').upsert({
-                    student_id: session.user.id, org_id: orgId, deck_id: card.chapter || 'Uncategorized', card_id: card.id, status: 'reviewed', reviewed_at: new Date().toISOString()
-                }, { onConflict: 'student_id, deck_id, card_id' });
-            } catch (err) {}
+                // If offline, throw an error immediately to jump to the catch block
+                if (!navigator.onLine) throw new Error("Offline");
+                
+                await supabase.from('flashcard_progress').upsert(payload, { onConflict: 'student_id, deck_id, card_id' });
+            } catch (err) {
+                // 🚀 FORCED SYNC QUEUE: If the DB fails or student is offline, save it to the phone's memory!
+                console.warn("Network offline. Saving flashcard progress locally.");
+                const existingOffline = JSON.parse(localStorage.getItem('atlas_reviewed_cards') || '[]');
+                existingOffline.push(card.id);
+                localStorage.setItem('atlas_reviewed_cards', JSON.stringify([...new Set(existingOffline)]));
+            }
         }
     };
 
