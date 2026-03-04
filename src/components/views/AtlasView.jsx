@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../supabaseClient';
 import InteractiveMindMap from '../layout/InteractiveMindMap'; 
-import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2, Users, Book, RefreshCw } from 'lucide-react';
+import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2, Users, Book, RefreshCw, Sparkles } from 'lucide-react';
 
 const AtlasView = ({ session }) => {
     const [activeTab, setActiveTab] = useState('flashcards');
@@ -19,11 +19,19 @@ const AtlasView = ({ session }) => {
     const [expandedChapters, setExpandedChapters] = useState({});
     const [expandedClassrooms, setExpandedClassrooms] = useState({});
 
-    // 1. DATA FETCHING ENGINE (Now a reusable callback)
+    // 🚀 NEW: Helper to check if an item is less than 7 days old
+    const isNewItem = (createdAt) => {
+        if (!createdAt) return false;
+        const itemDate = new Date(createdAt);
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        return itemDate >= sevenDaysAgo;
+    };
+
+    // 1. DATA FETCHING ENGINE 
     const fetchAtlasData = useCallback(async (isSilentRefresh = false) => {
         if (!session?.user?.id) return;
         
-        // Only show full loading screen on first load
         if (!isSilentRefresh) setLoading(true);
         else setIsBackgroundSyncing(true);
         
@@ -205,12 +213,9 @@ const AtlasView = ({ session }) => {
             };
 
             try {
-                // If offline, throw an error immediately to jump to the catch block
                 if (!navigator.onLine) throw new Error("Offline");
-                
                 await supabase.from('flashcard_progress').upsert(payload, { onConflict: 'student_id, deck_id, card_id' });
             } catch (err) {
-                // 🚀 FORCED SYNC QUEUE: If the DB fails or student is offline, save it to the phone's memory!
                 console.warn("Network offline. Saving flashcard progress locally.");
                 const existingOffline = JSON.parse(localStorage.getItem('atlas_reviewed_cards') || '[]');
                 existingOffline.push(card.id);
@@ -276,7 +281,7 @@ const AtlasView = ({ session }) => {
                     <p className="text-sm text-slate-500 mt-1">Interactive review materials curated by your faculty.</p>
                 </div>
                 
-                {/* 🚀 TAB NAVIGATION & MANUAL SYNC BUTTON */}
+                {/* TAB NAVIGATION & MANUAL SYNC BUTTON */}
                 <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto shrink-0">
                     <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0">
                         <button onClick={() => setActiveTab('flashcards')} className={`flex-1 sm:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all ${activeTab === 'flashcards' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>
@@ -287,7 +292,6 @@ const AtlasView = ({ session }) => {
                         </button>
                     </div>
 
-                    {/* MANUAL REFRESH BUTTON */}
                     <button 
                         onClick={() => fetchAtlasData(true)}
                         disabled={isBackgroundSyncing || loading}
@@ -362,6 +366,9 @@ const AtlasView = ({ session }) => {
                                                     const totalCount = cards.length;
                                                     const progressPercent = Math.round((reviewedCount / totalCount) * 100);
 
+                                                    // 🚀 FOLDER LEVEL NEW BADGE
+                                                    const hasNewCards = cards.some(c => isNewItem(c.created_at));
+
                                                     return (
                                                         <div key={folderKey} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 transition-all hover:border-indigo-300 dark:hover:border-indigo-700">
                                                             <div onClick={() => toggleFolder(folderKey)} className="flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer select-none group">
@@ -371,6 +378,13 @@ const AtlasView = ({ session }) => {
                                                                     </div>
                                                                     <Folder size={24} className="text-indigo-500 shrink-0" /> 
                                                                     <span className="truncate">{chapterName}</span>
+                                                                    
+                                                                    {/* 🚀 FOLDER BADGE */}
+                                                                    {hasNewCards && (
+                                                                        <span className="flex items-center gap-1 bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border border-pink-200 dark:border-pink-800">
+                                                                            <Sparkles size={10}/> New Updates
+                                                                        </span>
+                                                                    )}
                                                                 </h3>
                                                                 <div className="flex items-center gap-4 bg-slate-50 dark:bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-100 dark:border-slate-700/50 ml-11 md:ml-0">
                                                                     <div className="w-24 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
@@ -384,12 +398,23 @@ const AtlasView = ({ session }) => {
                                                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
                                                                     {cards.map(card => {
                                                                         const isReviewed = reviewedCards.has(card.id);
+                                                                        const isNew = isNewItem(card.created_at);
+
                                                                         return (
-                                                                            <div key={card.id} onClick={() => toggleFlip(card)} className="cursor-pointer group perspective-1000 h-64 w-full">
+                                                                            <div key={card.id} onClick={() => toggleFlip(card)} className="cursor-pointer group perspective-1000 h-64 w-full relative">
                                                                                 <div className={`relative w-full h-full transition-transform duration-500 transform-style-3d ${flippedCards[card.id] ? 'rotate-y-180' : ''}`}>
                                                                                     <div className={`absolute inset-0 backface-hidden bg-slate-50 dark:bg-slate-800 rounded-2xl border p-6 flex flex-col justify-center items-center text-center shadow-sm hover:shadow-md transition-all ${isReviewed ? 'border-green-200 dark:border-green-900/30 bg-green-50/30 dark:bg-green-900/10' : 'border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-700'}`}>
-                                                                                        <span className="absolute top-4 left-4 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div> Question</span>
-                                                                                        {isReviewed && <span className="absolute top-4 right-4 text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-widest flex items-center gap-1 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded-md"><CheckCircle2 size={12} /> Reviewed</span>}
+                                                                                        
+                                                                                        <span className="absolute top-4 left-4 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                                                                            <div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div> Question
+                                                                                        </span>
+                                                                                        
+                                                                                        {/* 🚀 CARD BADGES (Right Side) */}
+                                                                                        <div className="absolute top-4 right-4 flex flex-col gap-1 items-end">
+                                                                                            {isReviewed && <span className="text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-widest flex items-center gap-1 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded-md"><CheckCircle2 size={12} /> Reviewed</span>}
+                                                                                            {isNew && !isReviewed && <span className="text-[9px] font-black text-white uppercase tracking-widest bg-gradient-to-r from-pink-500 to-rose-500 px-2 py-0.5 rounded-md shadow-sm">NEW</span>}
+                                                                                        </div>
+
                                                                                         <h3 className="text-lg font-bold text-slate-800 dark:text-white leading-relaxed">{card.question}</h3>
                                                                                         <span className="absolute bottom-4 text-xs font-medium text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity">Click to flip</span>
                                                                                     </div>
@@ -460,6 +485,8 @@ const AtlasView = ({ session }) => {
                                                 .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
                                                 .map(([chapterName, maps]) => {
                                                     const folderKey = `${classGroup.id}-${chapterName}`;
+                                                    const hasNewMaps = maps.some(m => isNewItem(m.created_at));
+
                                                     return (
                                                         <div key={folderKey} className="space-y-4 bg-white dark:bg-slate-900 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 transition-all hover:border-indigo-300 dark:hover:border-indigo-700">
                                                             <h3 onClick={() => toggleFolder(folderKey)} className="font-bold text-lg text-slate-800 dark:text-white flex items-center gap-3 cursor-pointer select-none hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group">
@@ -468,28 +495,43 @@ const AtlasView = ({ session }) => {
                                                                 </div>
                                                                 <Folder size={24} className="text-indigo-500" /> 
                                                                 {chapterName}
+
+                                                                {/* 🚀 FOLDER BADGE (Mind Maps) */}
+                                                                {hasNewMaps && (
+                                                                    <span className="flex items-center gap-1 bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border border-pink-200 dark:border-pink-800 ml-2">
+                                                                        <Sparkles size={10}/> New Maps
+                                                                    </span>
+                                                                )}
                                                             </h3>
                                                             
                                                             {expandedChapters[folderKey] && (
                                                                 <div className="space-y-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
-                                                                    {maps.map(map => (
-                                                                        <div key={map.id} className="bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
-                                                                            <div className="bg-slate-100 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center gap-3">
-                                                                                <FileText size={18} className="text-slate-500 dark:text-slate-400" />
-                                                                                <h3 className="text-lg font-bold text-slate-800 dark:text-white">{map.title}</h3>
-                                                                            </div>
-                                                                            <div className="p-6">
-                                                                                {map.summary_html && map.summary_html !== '<p></p>' && (
-                                                                                    <div className="prose dark:prose-invert max-w-none text-slate-600 dark:text-slate-300 mb-8 leading-relaxed prose-headings:text-slate-800 dark:prose-headings:text-slate-100 prose-a:text-indigo-500 hover:prose-a:text-indigo-600 [&_p:empty]:h-4" dangerouslySetInnerHTML={{ __html: map.summary_html }} />
-                                                                                )}
-                                                                                {map.map_data && (
-                                                                                    <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-white dark:bg-slate-900 shadow-inner">
-                                                                                        <InteractiveMindMap mapData={map.map_data} studentId={session?.user?.id} mapId={map.id} orgId={orgId} />
+                                                                    {maps.map(map => {
+                                                                        const isNew = isNewItem(map.created_at);
+                                                                        return (
+                                                                            <div key={map.id} className="bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm relative">
+                                                                                <div className="bg-slate-100 dark:bg-slate-800/80 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center gap-3">
+                                                                                    <div className="flex items-center gap-3">
+                                                                                        <FileText size={18} className="text-slate-500 dark:text-slate-400" />
+                                                                                        <h3 className="text-lg font-bold text-slate-800 dark:text-white">{map.title}</h3>
                                                                                     </div>
-                                                                                )}
+                                                                                    
+                                                                                    {/* 🚀 MAP BADGE */}
+                                                                                    {isNew && <span className="text-[9px] font-black text-white uppercase tracking-widest bg-gradient-to-r from-pink-500 to-rose-500 px-2.5 py-1 rounded-lg shadow-sm">NEW MAP</span>}
+                                                                                </div>
+                                                                                <div className="p-6">
+                                                                                    {map.summary_html && map.summary_html !== '<p></p>' && (
+                                                                                        <div className="prose dark:prose-invert max-w-none text-slate-600 dark:text-slate-300 mb-8 leading-relaxed prose-headings:text-slate-800 dark:prose-headings:text-slate-100 prose-a:text-indigo-500 hover:prose-a:text-indigo-600 [&_p:empty]:h-4" dangerouslySetInnerHTML={{ __html: map.summary_html }} />
+                                                                                    )}
+                                                                                    {map.map_data && (
+                                                                                        <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-white dark:bg-slate-900 shadow-inner">
+                                                                                            <InteractiveMindMap mapData={map.map_data} studentId={session?.user?.id} mapId={map.id} orgId={orgId} />
+                                                                                        </div>
+                                                                                    )}
+                                                                                </div>
                                                                             </div>
-                                                                        </div>
-                                                                    ))}
+                                                                        );
+                                                                    })}
                                                                 </div>
                                                             )}
                                                         </div>
