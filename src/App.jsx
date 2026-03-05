@@ -214,8 +214,9 @@ function App() {
             .map(s => s.exam_id)
         );
         
+        // 🚀 UPDATED: Added new columns for shuffling and grace period
         const { data: deployments } = await supabase.from('exam_deployments')
-            .select(`deployment_id, scheduled_at, duration_minutes, status, auto_publish_results, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
+            .select(`deployment_id, scheduled_at, duration_minutes, grace_period_minutes, shuffle_questions, shuffle_options, status, auto_publish_results, exam:exam_master(exam_id, title, total_marks), classroom:classroom_master(name)`)
             .in('classroom_id', classIds)
             .in('status', ['scheduled', 'live', 'LIVE', 'DEPLOYED', 'deployed'])
             .eq('org_id', orgId) 
@@ -248,7 +249,18 @@ function App() {
     }
   };
 
+  // 🚀 UPDATED: Fisher-Yates Shuffling & Grace Period Added
   const startExam = async (deployment) => {
+      // 1. LATE ENTRY GRACE PERIOD CHECK
+      const now = Date.now();
+      const scheduledTime = new Date(deployment.scheduled_at).getTime();
+      const graceMs = (deployment.grace_period_minutes || 0) * 60000;
+      
+      if (deployment.grace_period_minutes > 0 && now > (scheduledTime + graceMs)) {
+          alert(`🚫 ENTRY DENIED\n\nThe late-entry window closed ${deployment.grace_period_minutes} minutes after the exam started.`);
+          return;
+      }
+
       setLoading(true);
       try {
           const { data: qData, error } = await supabase
@@ -259,6 +271,52 @@ function App() {
 
           if (error) throw new Error("RLS Block: " + error.message);
           
+          // 🚀 STEP 1: DECRYPT FIRST (So we can actually see the arrays to shuffle them)
+          let processedQuestions = (qData || []).map(q => {
+              let parsedOptions = q.options;
+              if (q.options?.cipher) {
+                  try { parsedOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch (e) { }
+              } else if (typeof q.options === 'string') {
+                  try { parsedOptions = JSON.parse(q.options); } catch (e) { }
+              }
+
+              let plainText = q.question_text;
+              if (typeof q.question_text === 'object' && q.question_text?.cipher) {
+                  try { plainText = decryptAES256(q.question_text.cipher); } catch(e) {}
+              }
+
+              return {
+                  ...q,
+                  question_text: plainText,
+                  options: parsedOptions
+              };
+          });
+
+          // Helper: Fisher-Yates Array Shuffle
+          const shuffleArray = (array) => {
+              const copy = [...array];
+              for (let i = copy.length - 1; i > 0; i--) {
+                  const j = Math.floor(Math.random() * (i + 1));
+                  [copy[i], copy[j]] = [copy[j], copy[i]];
+              }
+              return copy;
+          };
+
+          // 🚀 STEP 2: SHUFFLE THE DECRYPTED OPTIONS
+          if (deployment.shuffle_options) {
+              processedQuestions = processedQuestions.map(q => {
+                  if (q.options && Array.isArray(q.options)) {
+                      return { ...q, options: shuffleArray(q.options) };
+                  }
+                  return q;
+              });
+          }
+
+          // 🚀 STEP 3: SHUFFLE THE QUESTIONS
+          if (deployment.shuffle_questions) {
+              processedQuestions = shuffleArray(processedQuestions);
+          }
+          
           setCurrentExam({ 
               ...deployment.exam, 
               deployment_id: deployment.deployment_id,
@@ -267,7 +325,7 @@ function App() {
               org_id: profile.org_id 
           }); 
           
-          setExamQuestions(qData || []); 
+          setExamQuestions(processedQuestions); 
           setView('taking_exam'); 
           
       } catch (err) {
@@ -310,7 +368,6 @@ function App() {
                 const finalStatus = currentExam.auto_publish_results ? 'published' : 'pending';
 
                 try {
-                    // 🚀 THE FIX: Use update() to overwrite the 'in_progress' row
                     const { error } = await supabase
                         .from('exam_submissions')
                         .update({ 
@@ -319,12 +376,11 @@ function App() {
                             status: finalStatus,
                             answers: answers,
                             submitted_at: new Date().toISOString(),
-                            is_locked: false // Force unlock on completion
+                            is_locked: false
                         })
                         .eq('exam_id', examId)
                         .eq('student_id', session.user.id);
 
-                    // If it errors because the row magically didn't exist, we fall back to insert
                     if (error) {
                         console.warn("Update failed, attempting insert fallback...", error);
                         const insertRes = await supabase.from('exam_submissions').insert([{ 
@@ -334,7 +390,6 @@ function App() {
                         if (insertRes.error && insertRes.error.code !== '23505') throw insertRes.error;
                     }
 
-                    // 🚀 SYNC FIX 1: Local EVICTION (Instantly hides "Start Exam")
                     setDashboardData(prev => ({
                         ...prev,
                         availableExams: prev.availableExams.filter(ex => ex.exam?.exam_id !== examId)
@@ -346,7 +401,6 @@ function App() {
                     
                     alert(finalStatus === 'published' ? "Submission Successful!" : "Submission Successful! Results pending.");
 
-                    // 🚀 SYNC FIX 2: Indexing Delay 
                     setTimeout(async () => {
                         await fetchDashboardData(session.user.id, profile.org_id, true);
                         setLoading(false);
@@ -364,7 +418,6 @@ function App() {
 
   const refreshData = async () => {
       if (session?.user?.id && profile?.org_id) {
-          // 🚀 CHANGED TO 'true': This tells the app to refresh silently in the background!
           await fetchDashboardData(session.user.id, profile.org_id, true);
       }
   };
@@ -387,10 +440,7 @@ function App() {
         onRefresh={refreshData}
     >
        {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData(session.user.id, profile.org_id)} currentUserId={session.user.id} />}
-       
-       {/* 🚀 ADD THIS NEW LINE RIGHT HERE: */}
        {view === 'notifications' && <NotificationsView profile={profile} />}
-       
        {view === 'exams' && <ExamsView availableExams={dashboardData.availableExams} pastExams={dashboardData.pastExams} onStart={startExam} studentId={session.user.id} onRefresh={() => fetchDashboardData(session.user.id, profile.org_id, true)} />}
        {view === 'profile' && <ProfileView profile={profile} onUpdatePassword={handleUpdatePassword} />}
        {view === 'atlas' && (hasAccess('standard') ? <AtlasView session={session} /> : <PremiumLockedScreen feature="Study Atlas" />)}

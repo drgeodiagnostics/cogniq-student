@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import { 
     Users, History, ChevronDown, ChevronRight, 
-    CheckCircle, XCircle, FileSearch, X, Info, Clock, ShieldCheck, RefreshCw
+    CheckCircle, XCircle, FileSearch, X, Info, Clock, ShieldCheck, RefreshCw, BookOpen
 } from 'lucide-react';
 // 🛡️ IMPORT DECRYPTION PROTOCOL
 import { decryptAES256 } from '../../utils/security/sqbProtocol';
 
 const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, onRefresh }) => {
     const now = new Date();
+
+    // 🚀 NEW: Tab State
+    const [activeTab, setActiveTab] = useState('active'); // 'active' or 'past'
 
     const [collapsedActive, setCollapsedActive] = useState({});
     const [collapsedPast, setCollapsedPast] = useState({});
@@ -56,171 +59,199 @@ const ExamsView = ({ availableExams = [], pastExams = [], onStart, studentId, on
 
     return (
         <div className="space-y-8 pb-20 animate-in fade-in">
-            {/* Header Section */}
-            <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-6 rounded-[24px] shadow-sm border border-slate-200 dark:border-slate-800">
+            {/* 🚀 UPGRADED HEADER WITH TABS */}
+            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6 bg-white dark:bg-slate-900 p-6 rounded-[24px] shadow-sm border border-slate-200 dark:border-slate-800">
                 <div>
-                    <h1 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tight">Assessments</h1>
+                    <h1 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tight flex items-center gap-2">
+                        <BookOpen className="text-indigo-500" size={24}/> Assessments
+                    </h1>
                     <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">Manage your active exams and review past performance.</p>
                 </div>
-                <button 
-                    onClick={handleManualSync}
-                    disabled={isSyncing}
-                    className={`flex items-center gap-2 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border shadow-sm active:scale-95 ${
-                        isSyncing 
-                        ? 'bg-indigo-50 text-indigo-600 border-indigo-200 dark:bg-indigo-900/30 dark:border-indigo-800 animate-pulse' 
-                        : 'bg-white dark:bg-slate-900 text-slate-600 border-slate-200 dark:border-slate-800 hover:border-indigo-400 hover:text-indigo-600'
-                    }`}
-                >
-                    <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
-                    {isSyncing ? "Updating..." : "Sync Status"}
-                </button>
+
+                <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto shrink-0">
+                    {/* THE TABS */}
+                    <div className="flex bg-slate-100 dark:bg-slate-800 p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 w-full sm:w-auto shrink-0">
+                        <button 
+                            onClick={() => setActiveTab('active')} 
+                            className={`flex-1 sm:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${activeTab === 'active' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                        >
+                            <Clock size={16}/> Active ({availableExams?.length || 0})
+                        </button>
+                        <button 
+                            onClick={() => setActiveTab('past')} 
+                            className={`flex-1 sm:flex-none px-6 py-2.5 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${activeTab === 'past' ? 'bg-white dark:bg-slate-700 shadow-sm text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                        >
+                            <History size={16}/> Results ({completedPastExams.length || 0})
+                        </button>
+                    </div>
+
+                    {/* MANUAL SYNC BUTTON */}
+                    <button 
+                        onClick={handleManualSync}
+                        disabled={isSyncing}
+                        className={`w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border shadow-sm active:scale-95 shrink-0 ${
+                            isSyncing 
+                            ? 'bg-indigo-50 text-indigo-600 border-indigo-200 dark:bg-indigo-900/30 dark:border-indigo-800 animate-pulse' 
+                            : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:border-indigo-400 hover:text-indigo-600'
+                        }`}
+                    >
+                        <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
+                        {isSyncing ? "Syncing..." : "Sync Status"}
+                    </button>
+                </div>
             </div>
 
-            {/* --- ACTIVE & UPCOMING EXAMS --- */}
-            <div>
-                <h2 className="text-lg font-black text-slate-800 dark:text-white mb-6 uppercase tracking-tight">Active & Upcoming</h2>
-                {Object.keys(groupedAvailable).length === 0 ? (
-                    <div className="p-10 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-[24px] border border-dashed border-slate-200 dark:border-slate-800 shadow-sm">
-                        <span className="text-xs font-bold uppercase tracking-widest block mb-2">No active exams found.</span>
-                        <button onClick={handleManualSync} className="text-indigo-500 font-black text-[10px] uppercase hover:underline">Click to Refresh</button>
-                    </div>
-                ) : (
-                    <div className="space-y-8">
-                        {Object.entries(groupedAvailable)
-                            .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-                            .map(([className, exams]) => (
-                            <div key={className} className="space-y-4">
-                                <button 
-                                    onClick={() => toggleActive(className)}
-                                    className="w-full flex items-center justify-between font-black text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 pb-3 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group uppercase tracking-tight"
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <div className="p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-xl text-indigo-600 dark:text-indigo-400 group-hover:bg-indigo-100 transition-colors">
-                                            <Users size={18} />
+            {/* ========================================== */}
+            {/* 🟢 TAB 1: ACTIVE EXAMS                      */}
+            {/* ========================================== */}
+            {activeTab === 'active' && (
+                <div className="animate-in slide-in-from-left-4 duration-300">
+                    {Object.keys(groupedAvailable).length === 0 ? (
+                        <div className="p-16 text-center text-slate-400 bg-white dark:bg-slate-900 rounded-[24px] border border-dashed border-slate-200 dark:border-slate-800 shadow-sm flex flex-col items-center gap-3">
+                            <CheckCircle size={48} className="text-slate-200 dark:text-slate-700"/>
+                            <span className="text-xs font-black uppercase tracking-widest block">You are all caught up!</span>
+                            <button onClick={handleManualSync} className="text-indigo-500 font-bold text-[10px] uppercase hover:underline">Click to Refresh</button>
+                        </div>
+                    ) : (
+                        <div className="space-y-8">
+                            {Object.entries(groupedAvailable)
+                                .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+                                .map(([className, exams]) => (
+                                <div key={className} className="space-y-4">
+                                    <button 
+                                        onClick={() => toggleActive(className)}
+                                        className="w-full flex items-center justify-between font-black text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 pb-3 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group uppercase tracking-tight"
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className="p-2 bg-indigo-50 dark:bg-indigo-900/30 rounded-xl text-indigo-600 dark:text-indigo-400 group-hover:bg-indigo-100 transition-colors">
+                                                <Users size={18} />
+                                            </div>
+                                            {className}
+                                            <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md ml-2">
+                                                {exams.length}
+                                            </span>
                                         </div>
-                                        {className}
-                                        <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md ml-2">
-                                            {exams.length}
-                                        </span>
-                                    </div>
-                                    <div className="text-slate-400 group-hover:text-indigo-500 transition-colors">
-                                        {collapsedActive[className] ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
-                                    </div>
-                                </button>
+                                        <div className="text-slate-400 group-hover:text-indigo-500 transition-colors">
+                                            {collapsedActive[className] ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
+                                        </div>
+                                    </button>
 
-                                {!collapsedActive[className] && (
-                                    <div className="space-y-4 animate-in slide-in-from-top-2">
-                                        {exams.map(d => {
-                                            const scheduledTime = new Date(d.scheduled_at);
-                                            const isLive = d?.status?.toLowerCase() === 'live' || d?.status?.toLowerCase() === 'active' || now >= scheduledTime;
+                                    {!collapsedActive[className] && (
+                                        <div className="space-y-4 animate-in slide-in-from-top-2">
+                                            {exams.map(d => {
+                                                const scheduledTime = new Date(d.scheduled_at);
+                                                const isLive = d?.status?.toLowerCase() === 'live' || d?.status?.toLowerCase() === 'active' || now >= scheduledTime;
 
-                                            const cloudStarted = pastExams.some(sub => sub.exam_id === d.exam_id && sub.status === 'in_progress');
-                                            const localBufferKey = `exam_offline_buffer_${d.deployment_id}_${studentId}`;
-                                            const localStarted = !!localStorage.getItem(localBufferKey);
+                                                const cloudStarted = pastExams.some(sub => sub.exam_id === d.exam_id && sub.status === 'in_progress');
+                                                const localBufferKey = `exam_offline_buffer_${d.deployment_id}_${studentId}`;
+                                                const localStarted = !!localStorage.getItem(localBufferKey);
 
-                                            const isStarted = cloudStarted || localStarted;
+                                                const isStarted = cloudStarted || localStarted;
 
-                                            return (
-                                                <div 
-                                                    key={d.deployment_id} 
-                                                    className={`p-6 md:p-8 bg-white dark:bg-slate-900 rounded-[24px] flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm gap-6 transition-all group ${
-                                                        isLive ? 'border border-indigo-200 dark:border-indigo-900/50 hover:border-indigo-400 dark:hover:border-indigo-500' : 'border border-slate-200 dark:border-slate-800 opacity-80'
-                                                    }`}
-                                                >
-                                                    <div className="flex-1">
-                                                        <div className="flex items-center gap-2 mb-2">
-                                                            <h3 className="font-black text-xl text-slate-800 dark:text-white leading-tight">{d.exam?.title || 'Secure Assessment'}</h3>
-                                                            {isLive && <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]" />}
-                                                        </div>
-                                                        <div className="flex flex-wrap items-center gap-3 mt-3">
-                                                            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest flex items-center gap-1">
-                                                                <Clock size={12}/> {d.duration_minutes || 0} mins
-                                                            </span>
-                                                            <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest">
-                                                                Opens: {scheduledTime.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
-                                                            </span>
-                                                            <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest flex items-center gap-1 border border-green-200 dark:border-green-800/50">
-                                                                <ShieldCheck size={12}/> AES-256
-                                                            </span>
-                                                        </div>
-                                                    </div>
-                                                    <button 
-                                                        onClick={() => isLive && onStart(d)} 
-                                                        disabled={!isLive}
-                                                        className={`w-full md:w-auto px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition-all active:scale-95 shadow-lg ${
-                                                            !isLive 
-                                                                ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed shadow-none'
-                                                                : isStarted 
-                                                                    ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/20 ring-2 ring-amber-500 ring-offset-2 dark:ring-offset-slate-900' 
-                                                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                                                return (
+                                                    <div 
+                                                        key={d.deployment_id} 
+                                                        className={`p-6 md:p-8 bg-white dark:bg-slate-900 rounded-[24px] flex flex-col md:flex-row justify-between items-start md:items-center shadow-sm gap-6 transition-all group ${
+                                                            isLive ? 'border border-indigo-200 dark:border-indigo-900/50 hover:border-indigo-400 dark:hover:border-indigo-500' : 'border border-slate-200 dark:border-slate-800 opacity-80'
                                                         }`}
                                                     >
-                                                        {isLive ? (isStarted ? 'Continue Exam' : 'Start Exam') : 'Scheduled'}
-                                                    </button>
+                                                        <div className="flex-1">
+                                                            <div className="flex items-center gap-2 mb-2">
+                                                                <h3 className="font-black text-xl text-slate-800 dark:text-white leading-tight">{d.exam?.title || 'Secure Assessment'}</h3>
+                                                                {isLive && <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]" />}
+                                                            </div>
+                                                            <div className="flex flex-wrap items-center gap-3 mt-3">
+                                                                <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest flex items-center gap-1">
+                                                                    <Clock size={12}/> {d.duration_minutes || 0} mins
+                                                                </span>
+                                                                <span className="text-[10px] font-bold text-slate-500 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded uppercase tracking-widest">
+                                                                    Opens: {scheduledTime.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+                                                                </span>
+                                                                <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest flex items-center gap-1 border border-green-200 dark:border-green-800/50">
+                                                                    <ShieldCheck size={12}/> AES-256
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        <button 
+                                                            onClick={() => isLive && onStart(d)} 
+                                                            disabled={!isLive}
+                                                            className={`w-full md:w-auto px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs transition-all active:scale-95 shadow-lg ${
+                                                                !isLive 
+                                                                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed shadow-none'
+                                                                    : isStarted 
+                                                                        ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-500/20 ring-2 ring-amber-500 ring-offset-2 dark:ring-offset-slate-900' 
+                                                                        : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                                                            }`}
+                                                        >
+                                                            {isLive ? (isStarted ? 'Continue Exam' : 'Start Exam') : 'Scheduled'}
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* ========================================== */}
+            {/* 📚 TAB 2: PAST RESULTS                      */}
+            {/* ========================================== */}
+            {activeTab === 'past' && (
+                <div className="animate-in slide-in-from-right-4 duration-300">
+                    <div className="space-y-6">
+                        {Object.entries(groupedPast).length === 0 ? (
+                            <div className="p-16 text-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 rounded-[24px] border border-slate-200 dark:border-slate-800 flex flex-col items-center gap-3">
+                                <History size={48} className="text-slate-200 dark:text-slate-700"/>
+                                <span className="text-[10px] font-black uppercase tracking-[0.2em]">No results recorded yet</span>
+                            </div>
+                        ) : Object.entries(groupedPast).map(([className, exams]) => (
+                            <div key={className} className="space-y-3">
+                                <button onClick={() => togglePast(className)} className="w-full flex items-center justify-between text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-2 hover:text-indigo-600 transition-colors group">
+                                    <div className="flex items-center gap-2">
+                                        <span>{className}</span>
+                                        <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">{exams.length}</span>
+                                    </div>
+                                    <div>{collapsedPast[className] ? <ChevronRight size={16} /> : <ChevronDown size={16} />}</div>
+                                </button>
+                                {!collapsedPast[className] && (
+                                    <div className="space-y-4 animate-in slide-in-from-top-2">
+                                        {exams.map(e => (
+                                            <div key={e.submission_id} className="p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[24px] flex flex-col md:flex-row justify-between items-start md:items-center gap-6 transition-all hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800/50">
+                                                <div className="flex-1">
+                                                    <h4 className="font-black text-slate-800 dark:text-slate-100 text-lg leading-tight">{e.exam_master?.title || 'Exam'}</h4>
+                                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 block">Submitted: {new Date(e.submitted_at).toLocaleDateString()}</span>
                                                 </div>
-                                            );
-                                        })}
+
+                                                {e.status === 'published' ? (
+                                                    <div className="flex items-center gap-6 w-full md:w-auto shrink-0 justify-between md:justify-end">
+                                                        <div className="text-right">
+                                                            <span className="text-2xl font-black text-green-600 dark:text-green-500 leading-none block">{e.score || 0} <span className="text-sm text-slate-400">/ {e.total_marks || 0}</span></span>
+                                                            <span className="text-[9px] font-black text-green-700 dark:text-green-400 uppercase tracking-widest block mt-1">Published</span>
+                                                        </div>
+                                                        <button onClick={() => handleOpenReview(e)} className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400 px-5 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all">
+                                                            <FileSearch size={16} /> Review
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center w-full md:w-auto shrink-0 justify-between md:justify-end">
+                                                        <span className="font-black bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-5 py-3 rounded-xl border border-amber-200 dark:border-amber-800/50 text-[10px] uppercase tracking-widest flex items-center gap-2">
+                                                            <Clock size={14} /> Pending Release
+                                                        </span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
                                     </div>
                                 )}
                             </div>
                         ))}
                     </div>
-                )}
-            </div>
-
-            {/* --- PAST RESULTS --- */}
-            <div className="pt-8">
-                <h2 className="text-lg font-black text-slate-800 dark:text-white mb-6 uppercase tracking-tight flex items-center gap-2">
-                    <History size={20} className="text-indigo-500" /> Past Results
-                </h2>
-                <div className="space-y-6">
-                    {Object.entries(groupedPast).length === 0 ? (
-                        <div className="p-8 text-center text-slate-400 bg-slate-50 dark:bg-slate-900/50 rounded-[24px] border border-slate-200 dark:border-slate-800">
-                             <span className="text-[10px] font-black uppercase tracking-[0.2em]">No results recorded yet</span>
-                        </div>
-                    ) : Object.entries(groupedPast).map(([className, exams]) => (
-                        <div key={className} className="space-y-3">
-                            <button onClick={() => togglePast(className)} className="w-full flex items-center justify-between text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest border-b border-slate-100 dark:border-slate-800 pb-2 hover:text-indigo-600 transition-colors group">
-                                <div className="flex items-center gap-2">
-                                    <span>{className}</span>
-                                    <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">{exams.length}</span>
-                                </div>
-                                <div>{collapsedPast[className] ? <ChevronRight size={16} /> : <ChevronDown size={16} />}</div>
-                            </button>
-                            {!collapsedPast[className] && (
-                                <div className="space-y-4">
-                                    {exams.map(e => (
-                                        <div key={e.submission_id} className="p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-[24px] flex flex-col md:flex-row justify-between items-start md:items-center gap-6 transition-all hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800/50">
-                                            <div className="flex-1">
-                                                <h4 className="font-black text-slate-800 dark:text-slate-100 text-lg leading-tight">{e.exam_master?.title || 'Exam'}</h4>
-                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1 block">Submitted: {new Date(e.submitted_at).toLocaleDateString()}</span>
-                                            </div>
-
-                                            {e.status === 'published' ? (
-                                                <div className="flex items-center gap-6 w-full md:w-auto shrink-0 justify-between md:justify-end">
-                                                    <div className="text-right">
-                                                        <span className="text-2xl font-black text-green-600 dark:text-green-500 leading-none block">{e.score || 0} <span className="text-sm text-slate-400">/ {e.total_marks || 0}</span></span>
-                                                        <span className="text-[9px] font-black text-green-700 dark:text-green-400 uppercase tracking-widest block mt-1">Published</span>
-                                                    </div>
-                                                    <button onClick={() => handleOpenReview(e)} className="flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-400 px-5 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all">
-                                                        <FileSearch size={16} /> Review
-                                                    </button>
-                                                </div>
-                                            ) : (
-                                                <div className="flex items-center w-full md:w-auto shrink-0 justify-between md:justify-end">
-                                                    <span className="font-black bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 px-5 py-3 rounded-xl border border-amber-200 dark:border-amber-800/50 text-[10px] uppercase tracking-widest flex items-center gap-2">
-                                                        <Clock size={14} /> Pending Release
-                                                    </span>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    ))}
                 </div>
-            </div>
+            )}
 
             {/* --- SAFE REVIEW MODAL --- */}
             {reviewExam && (
