@@ -1,27 +1,130 @@
 import React, { useState } from 'react';
 import { 
     LayoutDashboard, BookOpen, Layers, Users, User, 
-    LogOut, Menu, X, PanelLeftClose, PanelLeftOpen, ShieldCheck, Ban, RefreshCw 
+    LogOut, Menu, X, ShieldCheck, Ban, RefreshCw, Bell 
 } from 'lucide-react';
 
-// 🚀 ADDED onRefresh prop
+import NotificationBell from './NotificationBell';
+
+// --- DRAWER NAVIGATION COMPONENT ---
+const SideDrawer = ({ isOpen, onClose, userProfile, onSignOut, onNavigate, activeView }) => {
+  const handleNavClick = (viewName) => {
+    onNavigate(viewName);
+    onClose();
+  };
+
+  const navItems = [
+      { id: 'dashboard', icon: LayoutDashboard, label: 'Overview' },
+      { id: 'exams', icon: BookOpen, label: 'Assessments' },
+      { id: 'atlas', icon: Layers, label: 'Study Atlas' },
+      { id: 'mentorship', icon: Users, label: 'Mentorship' },
+      { id: 'notifications', icon: Bell, label: 'Notifications' },
+  ];
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div 
+        className={`fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 transition-opacity duration-300 ${isOpen ? "opacity-100" : "opacity-0 pointer-events-none"}`} 
+        onClick={onClose} 
+      />
+      
+      {/* Sliding Drawer */}
+      <div className={`fixed top-0 left-0 h-full w-72 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 shadow-2xl z-50 transform transition-transform duration-300 ease-out flex flex-col ${isOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        
+        {/* Drawer Header (Profile Snapshot) */}
+        <div className="p-6 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex justify-between items-start flex-shrink-0">
+          <div>
+            <div className="h-12 w-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white font-black text-lg mb-3 shadow-lg shadow-indigo-500/20">
+                {userProfile?.initials || 'ST'}
+            </div>
+            <h2 className="font-black text-slate-800 dark:text-white text-lg line-clamp-1 leading-tight">
+                {userProfile?.name || 'Student Candidate'}
+            </h2>
+            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-1">
+                {userProfile?.regNo || 'Enrolled Scholar'}
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 dark:hover:bg-slate-800 dark:hover:text-slate-300 rounded-full transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Drawer Links */}
+        <nav className="flex-1 overflow-y-auto py-6 px-4 space-y-1.5 custom-scrollbar">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-3 mb-3">Academic Modules</p>
+            
+            {navItems.map((item) => {
+                const isActive = activeView === item.id;
+                return (
+                    <button
+                        key={item.id}
+                        onClick={() => handleNavClick(item.id)}
+                        className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all group ${
+                            isActive 
+                                ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400 font-black border border-indigo-100 dark:border-indigo-800/50' 
+                                : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-bold border border-transparent'
+                        }`}
+                    >
+                        <item.icon size={20} className={`shrink-0 transition-transform ${isActive ? 'scale-110' : 'group-hover:scale-110'}`} />
+                        <span>{item.label}</span>
+                    </button>
+                );
+            })}
+
+            <div className="pt-4 mt-4 border-t border-slate-100 dark:border-slate-800">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-3 mb-3">Account</p>
+                <button
+                    onClick={() => handleNavClick('profile')}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all group ${
+                        activeView === 'profile' 
+                            ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400 font-black border border-indigo-100 dark:border-indigo-800/50' 
+                            : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-bold border border-transparent'
+                    }`}
+                >
+                    <User size={20} className={`shrink-0 transition-transform ${activeView === 'profile' ? 'scale-110' : 'group-hover:scale-110'}`} />
+                    <span>My Profile</span>
+                </button>
+            </div>
+        </nav>
+
+        {/* Secure Logout */}
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 flex-shrink-0">
+          <button 
+            onClick={onSignOut} 
+            className="flex items-center justify-center w-full px-4 py-3 text-sm font-black uppercase tracking-widest text-red-500 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shadow-sm"
+          >
+            <LogOut size={16} className="mr-2" /> Secure Logout
+          </button>
+        </div>
+      </div>
+    </>
+  );
+};
+
+
+// --- MAIN LAYOUT COMPONENT ---
 export default function StudentDashboardLayout({ userProfile, onSignOut, onNavigate, currentView, onRefresh, children }) {
-    // 📱 Mobile/iPad Portrait Drawer State
-    const [isMobileOpen, setIsMobileOpen] = useState(false);
-    // 💻 Desktop/iPad Landscape Collapse State
-    const [isCollapsed, setIsCollapsed] = useState(false);
-    
-    // 🚀 NEW: Sync State
+    const [isDrawerOpen, setIsDrawerOpen] = useState(false);
     const [isSyncing, setIsSyncing] = useState(false);
 
-    // 🚀 NEW: Sync Handler
     const handleGlobalSync = async () => {
         setIsSyncing(true);
         if (onRefresh) await onRefresh();
-        setTimeout(() => setIsSyncing(false), 800); // 800ms minimum spin for smooth UX
+        setTimeout(() => setIsSyncing(false), 800); 
     };
 
-    // 🚀 INTERCEPTOR: SUSPENDED STUDENT LOCKOUT
+    // View Title Mapping for the Header
+    const viewTitles = {
+        'dashboard': 'Overview',
+        'exams': 'Assessments',
+        'atlas': 'Study Atlas',
+        'mentorship': 'Mentorship',
+        'profile': 'My Profile'
+    };
+    const headerTitle = viewTitles[currentView] || 'Student Portal';
+
+    // 🚨 INTERCEPTOR: SUSPENDED STUDENT LOCKOUT
     if (userProfile?.is_suspended) {
         return (
             <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-slate-100 p-6 animate-in fade-in zoom-in-95 duration-500">
@@ -48,168 +151,78 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
         );
     }
 
-    const navItems = [
-        { id: 'dashboard', icon: LayoutDashboard, label: 'Overview' },
-        { id: 'exams', icon: BookOpen, label: 'Assessments' },
-        { id: 'atlas', icon: Layers, label: 'Study Atlas' },
-        { id: 'mentorship', icon: Users, label: 'Mentorship' },
-    ];
-
-    const handleNav = (id) => {
-        onNavigate(id);
-        setIsMobileOpen(false); // Auto-close drawer on mobile after clicking
-    };
-
     return (
-        <div className="min-h-screen bg-slate-50 dark:bg-[#0b0f19] flex font-sans text-slate-900 dark:text-slate-100 selection:bg-indigo-500/30">
+        <div className="min-h-screen bg-slate-50 dark:bg-[#0b0f19] font-sans text-slate-900 dark:text-slate-100 transition-colors duration-200">
             
-            {/* --- MOBILE / IPAD PORTRAIT TOP NAV --- */}
-            <div className="lg:hidden fixed top-0 left-0 right-0 h-[72px] bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 z-50 flex items-center justify-between px-4 shadow-sm">
-                <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-black text-xl tracking-tight">
-                    <ShieldCheck size={26} />
-                    <span>CogniQ<span className="text-slate-800 dark:text-white">Ed</span></span>
-                </div>
+            {/* --- THE PERMANENT TOP HEADER --- */}
+            <header className="sticky top-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 h-[72px] flex items-center justify-between z-30 shadow-sm">
                 
-                {/* 🚀 ADDED SYNC TO MOBILE HEADER */}
-                <div className="flex items-center gap-2">
+                {/* Left Side: Brand & Menu */}
+                <div className="flex items-center gap-2 md:gap-4">
                     <button 
-                        onClick={handleGlobalSync}
-                        disabled={isSyncing}
-                        className="p-2.5 text-slate-400 hover:text-indigo-600 rounded-xl active:scale-95 transition-all disabled:opacity-50"
-                    >
-                        <RefreshCw size={22} className={isSyncing ? "animate-spin text-indigo-500" : ""} />
-                    </button>
-                    <button 
-                        onClick={() => setIsMobileOpen(true)} 
-                        className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl active:scale-95 transition-all border border-slate-200 dark:border-slate-700"
+                        onClick={() => setIsDrawerOpen(true)} 
+                        className="p-2 -ml-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors active:scale-95"
                     >
                         <Menu size={24} />
                     </button>
-                </div>
-            </div>
-
-            {/* --- SIDEBAR OVERLAY (Mobile/Tablet Portrait) --- */}
-            {isMobileOpen && (
-                <div 
-                    className="lg:hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 transition-opacity"
-                    onClick={() => setIsMobileOpen(false)}
-                />
-            )}
-
-            {/* --- THE SIDEBAR --- */}
-            <aside 
-                className={`fixed lg:static top-0 left-0 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 z-50 flex flex-col transition-all duration-300 ease-in-out shadow-2xl lg:shadow-none
-                ${isMobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} 
-                ${isCollapsed ? 'lg:w-20' : 'w-72 lg:w-72'}`}
-            >
-                {/* Brand Header & Toggle */}
-                <div className="h-[72px] flex items-center justify-between px-5 border-b border-slate-200 dark:border-slate-800 shrink-0">
-                    <div className={`flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-black text-2xl tracking-tight overflow-hidden transition-opacity duration-300 ${isCollapsed ? 'lg:opacity-0 lg:w-0' : 'opacity-100 w-auto'}`}>
-                        <ShieldCheck size={28} className="shrink-0" />
-                        <span>CogniQ<span className="text-slate-800 dark:text-white">Ed</span></span>
-                    </div>
-
-                    {/* Desktop/iPad Landscape Collapse Button */}
-                    <button 
-                        onClick={() => setIsCollapsed(!isCollapsed)}
-                        className="hidden lg:flex p-2 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-xl transition-colors shrink-0"
-                        title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-                    >
-                        {isCollapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
-                    </button>
-
-                    {/* Mobile Close Button */}
-                    <button 
-                        onClick={() => setIsMobileOpen(false)}
-                        className="lg:hidden p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-xl transition-colors"
-                    >
-                        <X size={24} />
-                    </button>
-                </div>
-
-                {/* Navigation Links */}
-                <nav className="flex-1 overflow-y-auto py-6 px-4 space-y-2 no-scrollbar">
                     
-                    {/* 🚀 ADDED SYNC TO DESKTOP SIDEBAR */}
-                    <div className="mb-6 flex justify-center">
-                        <button 
-                            onClick={handleGlobalSync}
-                            disabled={isSyncing}
-                            className={`flex items-center justify-center gap-2 py-3 rounded-xl transition-all font-bold text-xs uppercase tracking-widest disabled:opacity-50 ${isCollapsed ? 'w-12 bg-slate-50 text-slate-400 hover:text-indigo-600' : 'w-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-100'}`}
-                            title="Sync App Data"
-                        >
-                            <RefreshCw size={16} className={isSyncing ? "animate-spin text-indigo-600" : ""} />
-                            {!isCollapsed && <span>{isSyncing ? 'Syncing...' : 'Sync Data'}</span>}
-                        </button>
-                    </div>
-
-                    {!isCollapsed && <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2 mb-4">Main Menu</p>}
-                    
-                    {navItems.map((item) => {
-                        const isActive = currentView === item.id;
-                        return (
-                            <button
-                                key={item.id}
-                                onClick={() => handleNav(item.id)}
-                                title={isCollapsed ? item.label : ""}
-                                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-2xl transition-all group ${
-                                    isActive 
-                                        ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400 font-black' 
-                                        : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-200 font-bold'
-                                } ${isCollapsed ? 'lg:justify-center px-0' : 'justify-start'}`}
-                            >
-                                <item.icon size={22} className={`shrink-0 transition-transform ${isActive ? 'scale-110' : 'group-hover:scale-110'}`} />
-                                <span className={`whitespace-nowrap transition-opacity duration-300 ${isCollapsed ? 'lg:hidden' : 'block'}`}>
-                                    {item.label}
-                                </span>
-                            </button>
-                        );
-                    })}
-                </nav>
-
-                {/* Secure ID Badge Profile Section */}
-                <div className="p-4 border-t border-slate-200 dark:border-slate-800 shrink-0">
-                    <div className={`flex flex-col gap-2 ${isCollapsed ? 'items-center' : ''}`}>
-                        <button 
-                            onClick={() => handleNav('profile')}
-                            title={isCollapsed ? "Profile Settings" : "View Profile"}
-                            className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all border ${
-                                currentView === 'profile' 
-                                    ? 'bg-indigo-50 border-indigo-100 dark:bg-indigo-900/20 dark:border-indigo-800/50' 
-                                    : 'bg-slate-50 border-slate-200 dark:bg-slate-800/50 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-700'
-                            } ${isCollapsed ? 'lg:justify-center' : 'justify-start'}`}
-                        >
-                            <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-indigo-700 dark:text-indigo-400 font-black text-sm shrink-0">
-                                {userProfile?.initials || <User size={18} />}
-                            </div>
-                            <div className={`text-left overflow-hidden transition-opacity duration-300 ${isCollapsed ? 'lg:hidden' : 'block'}`}>
-                                <p className="text-sm font-black text-slate-800 dark:text-white truncate leading-tight">{userProfile?.name || 'Student Candidate'}</p>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest truncate mt-0.5">{userProfile?.regNo || 'Profile Settings'}</p>
-                            </div>
-                        </button>
-                        
-                        <button 
-                            onClick={onSignOut}
-                            title={isCollapsed ? "Secure Logout" : ""}
-                            className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-slate-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all font-bold ${isCollapsed ? 'lg:justify-center px-0' : 'justify-start'}`}
-                        >
-                            <LogOut size={20} className="shrink-0" />
-                            <span className={`whitespace-nowrap transition-opacity duration-300 ${isCollapsed ? 'lg:hidden' : 'block'}`}>
-                                Secure Logout
-                            </span>
-                        </button>
+                    <div className="flex flex-col">
+                        <span className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                            <ShieldCheck size={12} className="text-indigo-500 hidden sm:block" />
+                            CogniQ Ed • Student Portal
+                        </span>
+                        <span className="text-sm md:text-base font-black text-slate-800 dark:text-white uppercase tracking-tight">
+                            {headerTitle}
+                        </span>
                     </div>
                 </div>
-            </aside>
-
-            {/* --- MAIN CONTENT AREA --- */}
-            <main className="flex-1 h-screen overflow-y-auto w-full custom-scrollbar relative">
-                {/* Spacer for mobile fixed header */}
-                <div className="h-[72px] lg:hidden w-full shrink-0"></div> 
                 
-                <div className="p-4 md:p-8 max-w-7xl mx-auto w-full">
-                    {children}
+                {/* Right Side: Tools & Profile */}
+                <div className="flex items-center gap-1 md:gap-3">
+                    
+                    {/* SYNC BUTTON */}
+                    <button 
+                        onClick={handleGlobalSync}
+                        disabled={isSyncing}
+                        className="relative p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-50 active:scale-95"
+                        title="Sync Database"
+                    >
+                        <RefreshCw size={20} className={isSyncing ? "animate-spin text-indigo-500" : ""} />
+                    </button>
+
+                    {/* DYNAMIC NOTIFICATION BELL */}
+                    <div className="shrink-0 mr-1 md:mr-2">
+                        <NotificationBell userId={userProfile?.user_id} onNavigate={onNavigate} /> {/* 👈 Added onNavigate here */}
+                    </div>
+
+                    {/* PROFILE BUTTON (Hidden text on small mobile) */}
+                    <button 
+                        onClick={() => onNavigate('profile')}
+                        className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors border border-transparent hover:border-slate-200 dark:hover:border-slate-700 group active:scale-95"
+                    >
+                        <div className="h-8 w-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/50 flex items-center justify-center font-black text-xs shadow-sm group-hover:bg-indigo-500 group-hover:text-white transition-colors">
+                            {userProfile?.initials || 'ST'}
+                        </div>
+                        <span className="text-sm font-bold hidden sm:block text-slate-700 dark:text-slate-200">
+                            {userProfile?.name?.split(' ')[0]} {/* First name only for clean header */}
+                        </span>
+                    </button>
                 </div>
+            </header>
+
+            {/* --- THE SLIDING DRAWER --- */}
+            <SideDrawer 
+                isOpen={isDrawerOpen} 
+                onClose={() => setIsDrawerOpen(false)} 
+                userProfile={userProfile} 
+                onSignOut={onSignOut} 
+                onNavigate={onNavigate} 
+                activeView={currentView} 
+            />
+            
+            {/* --- MAIN CONTENT AREA --- */}
+            <main className="max-w-7xl mx-auto p-4 md:p-8 w-full animate-in fade-in duration-500">
+                {children}
             </main>
 
         </div>

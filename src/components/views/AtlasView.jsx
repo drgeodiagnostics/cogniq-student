@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../supabaseClient';
 import InteractiveMindMap from '../layout/InteractiveMindMap'; 
+import { StudyLogSyncService } from '../../utils/StudyLogSyncService'; // 🚀 IMPORT NEW SERVICE
 import { Folder, ChevronDown, ChevronRight, Layers, FileText, CheckCircle2, Users, Book, RefreshCw, Sparkles } from 'lucide-react';
 
 const AtlasView = ({ session }) => {
@@ -19,7 +20,6 @@ const AtlasView = ({ session }) => {
     const [expandedChapters, setExpandedChapters] = useState({});
     const [expandedClassrooms, setExpandedClassrooms] = useState({});
 
-    // 🚀 NEW: Helper to check if an item is less than 7 days old
     const isNewItem = (createdAt) => {
         if (!createdAt) return false;
         const itemDate = new Date(createdAt);
@@ -36,6 +36,9 @@ const AtlasView = ({ session }) => {
         else setIsBackgroundSyncing(true);
         
         try {
+            // 🚀 TRIGGER BACKGROUND SYNC EVERY TIME WE FETCH
+            StudyLogSyncService.syncOfflineLogs();
+
             const { data: userProfile } = await supabase
                 .from('user_master')
                 .select('org_id')
@@ -56,10 +59,7 @@ const AtlasView = ({ session }) => {
             (enrollments || []).forEach(e => {
                 myClassIds.push(e.classroom_id);
                 if (e.classroom_master) {
-                    cMap[e.classroom_id] = {
-                        name: e.classroom_master.name,
-                        subject: e.classroom_master.subject || 'General Studies'
-                    };
+                    cMap[e.classroom_id] = { name: e.classroom_master.name, subject: e.classroom_master.subject || 'General Studies' };
                 }
             });
 
@@ -88,26 +88,14 @@ const AtlasView = ({ session }) => {
                 let fullCardData = [];
 
                 while (fetchMore) {
-                    const { data: cardData } = await supabase
-                        .from('atlas_flashcards')
-                        .select('*')
-                        .eq('org_id', fetchedOrgId)
-                        .in('chapter', authorizedFlashcardNames)
-                        .range(startIdx, startIdx + step - 1);
-
+                    const { data: cardData } = await supabase.from('atlas_flashcards').select('*').eq('org_id', fetchedOrgId).in('chapter', authorizedFlashcardNames).range(startIdx, startIdx + step - 1);
                     if (cardData && cardData.length > 0) {
                         fullCardData = [...fullCardData, ...cardData];
                         startIdx += step;
                         if (cardData.length < step) fetchMore = false; 
-                    } else {
-                        fetchMore = false;
-                    }
+                    } else fetchMore = false;
                 }
-                 
-                allCards = fullCardData.filter(card => {
-                    const uniqueRef = `${card.department_id}_${card.chapter}`;
-                    return authorizedFlashcardFolders.includes(uniqueRef);
-                });
+                allCards = fullCardData.filter(card => authorizedFlashcardFolders.includes(`${card.department_id}_${card.chapter}`));
             }
 
             let allMaps = [];
@@ -118,30 +106,19 @@ const AtlasView = ({ session }) => {
                 let fullMapData = [];
 
                 while (fetchMore) {
-                    const { data: mapData } = await supabase
-                        .from('atlas_mindmaps')
-                        .select('*')
-                        .eq('org_id', fetchedOrgId)
-                        .in('chapter', authorizedMindmapNames)
-                        .range(startIdx, startIdx + step - 1);
-                    
+                    const { data: mapData } = await supabase.from('atlas_mindmaps').select('*').eq('org_id', fetchedOrgId).in('chapter', authorizedMindmapNames).range(startIdx, startIdx + step - 1);
                     if (mapData && mapData.length > 0) {
                         fullMapData = [...fullMapData, ...mapData];
                         startIdx += step;
                         if (mapData.length < step) fetchMore = false;
-                    } else {
-                        fetchMore = false;
-                    }
+                    } else fetchMore = false;
                 }
-                
-                allMaps = fullMapData.filter(map => {
-                    const uniqueRef = `${map.department_id}_${map.chapter}`;
-                    return authorizedMindmapFolders.includes(uniqueRef);
-                });
+                allMaps = fullMapData.filter(map => authorizedMindmapFolders.includes(`${map.department_id}_${map.chapter}`));
             }
 
-            const { data: progressData } = await supabase.from('flashcard_progress').select('card_id').eq('student_id', session.user.id);
-            if (progressData) setReviewedCards(new Set(progressData.map(p => p.card_id)));
+            // 🚀 USE THE NEW SYNC ENGINE TO GET PROGRESS
+            const mergedProgress = await StudyLogSyncService.getReviewedCards(session.user.id);
+            setReviewedCards(mergedProgress);
 
             setFlashcards(allCards);
             setMindmaps(allMaps);
@@ -156,71 +133,33 @@ const AtlasView = ({ session }) => {
         }
     }, [session]);
 
-    // 🚀 INITIAL LOAD & VISIBILITY CACHE BUSTER
     useEffect(() => {
         fetchAtlasData(false);
 
         const handleVisibilityChange = () => {
-            if (document.visibilityState === 'visible') {
-                fetchAtlasData(true);
-            }
+            if (document.visibilityState === 'visible') fetchAtlasData(true);
         };
+        const handleOnline = () => StudyLogSyncService.syncOfflineLogs();
 
         document.addEventListener('visibilitychange', handleVisibilityChange);
-        return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('online', handleOnline);
+
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('online', handleOnline);
+        }
     }, [fetchAtlasData]);
-
-    // 2. SILENT LOCAL STORAGE MIGRATION ENGINE
-    useEffect(() => {
-        const migrateLocalData = async () => {
-            if (!session?.user?.id || flashcards.length === 0) return;
-            const localSaved = localStorage.getItem('atlas_reviewed_cards');
-            if (!localSaved) return; 
-
-            try {
-                const localIds = JSON.parse(localSaved);
-                if (!Array.isArray(localIds) || localIds.length === 0) { localStorage.removeItem('atlas_reviewed_cards'); return; }
-
-                const payload = localIds.map(id => {
-                    const card = flashcards.find(c => c.id === id);
-                    return { student_id: session.user.id, deck_id: card?.chapter || 'Uncategorized', card_id: id, status: 'reviewed', reviewed_at: new Date().toISOString() };
-                });
-
-                const { error } = await supabase.from('flashcard_progress').upsert(payload, { onConflict: 'student_id, deck_id, card_id' });
-                if (!error) {
-                    setReviewedCards(prev => { const next = new Set(prev); localIds.forEach(id => next.add(id)); return next; });
-                    localStorage.removeItem('atlas_reviewed_cards');
-                }
-            } catch (err) {}
-        };
-        migrateLocalData();
-    }, [flashcards, session]); 
 
     // --- INTERACTION HANDLERS ---
     const toggleFlip = async (card) => {
         setFlippedCards(prev => ({ ...prev, [card.id]: !prev[card.id] }));
         
         if (!reviewedCards.has(card.id)) {
+            // Optimistic UI update
             setReviewedCards(prev => new Set(prev).add(card.id));
             
-            const payload = {
-                student_id: session.user.id, 
-                org_id: orgId, 
-                deck_id: card.chapter || 'Uncategorized', 
-                card_id: card.id, 
-                status: 'reviewed', 
-                reviewed_at: new Date().toISOString()
-            };
-
-            try {
-                if (!navigator.onLine) throw new Error("Offline");
-                await supabase.from('flashcard_progress').upsert(payload, { onConflict: 'student_id, deck_id, card_id' });
-            } catch (err) {
-                console.warn("Network offline. Saving flashcard progress locally.");
-                const existingOffline = JSON.parse(localStorage.getItem('atlas_reviewed_cards') || '[]');
-                existingOffline.push(card.id);
-                localStorage.setItem('atlas_reviewed_cards', JSON.stringify([...new Set(existingOffline)]));
-            }
+            // 🚀 FIRE AND FORGET USING THE DEDICATED SERVICE
+            StudyLogSyncService.logCardReview(session.user.id, orgId, card);
         }
     };
 
@@ -366,7 +305,6 @@ const AtlasView = ({ session }) => {
                                                     const totalCount = cards.length;
                                                     const progressPercent = Math.round((reviewedCount / totalCount) * 100);
 
-                                                    // 🚀 FOLDER LEVEL NEW BADGE
                                                     const hasNewCards = cards.some(c => isNewItem(c.created_at));
 
                                                     return (
@@ -379,7 +317,6 @@ const AtlasView = ({ session }) => {
                                                                     <Folder size={24} className="text-indigo-500 shrink-0" /> 
                                                                     <span className="truncate">{chapterName}</span>
                                                                     
-                                                                    {/* 🚀 FOLDER BADGE */}
                                                                     {hasNewCards && (
                                                                         <span className="flex items-center gap-1 bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border border-pink-200 dark:border-pink-800">
                                                                             <Sparkles size={10}/> New Updates
@@ -409,7 +346,6 @@ const AtlasView = ({ session }) => {
                                                                                             <div className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600"></div> Question
                                                                                         </span>
                                                                                         
-                                                                                        {/* 🚀 CARD BADGES (Right Side) */}
                                                                                         <div className="absolute top-4 right-4 flex flex-col gap-1 items-end">
                                                                                             {isReviewed && <span className="text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-widest flex items-center gap-1 bg-green-100 dark:bg-green-900/30 px-2 py-0.5 rounded-md"><CheckCircle2 size={12} /> Reviewed</span>}
                                                                                             {isNew && !isReviewed && <span className="text-[9px] font-black text-white uppercase tracking-widest bg-gradient-to-r from-pink-500 to-rose-500 px-2 py-0.5 rounded-md shadow-sm">NEW</span>}
@@ -496,7 +432,6 @@ const AtlasView = ({ session }) => {
                                                                 <Folder size={24} className="text-indigo-500" /> 
                                                                 {chapterName}
 
-                                                                {/* 🚀 FOLDER BADGE (Mind Maps) */}
                                                                 {hasNewMaps && (
                                                                     <span className="flex items-center gap-1 bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest border border-pink-200 dark:border-pink-800 ml-2">
                                                                         <Sparkles size={10}/> New Maps
@@ -516,7 +451,6 @@ const AtlasView = ({ session }) => {
                                                                                         <h3 className="text-lg font-bold text-slate-800 dark:text-white">{map.title}</h3>
                                                                                     </div>
                                                                                     
-                                                                                    {/* 🚀 MAP BADGE */}
                                                                                     {isNew && <span className="text-[9px] font-black text-white uppercase tracking-widest bg-gradient-to-r from-pink-500 to-rose-500 px-2.5 py-1 rounded-lg shadow-sm">NEW MAP</span>}
                                                                                 </div>
                                                                                 <div className="p-6">

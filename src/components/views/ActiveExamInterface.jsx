@@ -257,10 +257,10 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         initializeSession();
     }, [exam?.exam_id, exam?.org_id, studentId, LOCAL_BACKUP_KEY, decryptedAndShuffledQuestions]); // 👈 Added ?
 
-    // --- 🛡️ PROCTORING ENGINE & OFFLINE THREAT QUEUE ---
+// --- 🛡️ PROCTORING ENGINE & OFFLINE THREAT QUEUE ---
     useEffect(() => {
         let violationDebounce = false;
-        const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam?.deployment_id}_${studentId}`; // 👈 Added ?
+        const OFFLINE_THREAT_QUEUE_KEY = `offline_threats_${exam?.deployment_id}_${studentId}`; 
 
         const flushOfflineThreats = async () => {
             if (!navigator.onLine) return; 
@@ -271,7 +271,20 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 const queuedThreats = JSON.parse(queuedThreatsStr);
                 if (Array.isArray(queuedThreats) && queuedThreats.length > 0) {
                     const { error } = await supabase.from('proctoring_logs').insert(queuedThreats);
-                    if (!error) localStorage.removeItem(OFFLINE_THREAT_QUEUE_KEY);
+                    if (!error) {
+                        localStorage.removeItem(OFFLINE_THREAT_QUEUE_KEY);
+                        
+                        // 🚀 NEW: PUSH DELAYED NOTIFICATIONS TO FACULTY BELL
+                        if (exam?.created_by) {
+                            const notifs = queuedThreats.map(t => ({
+                                user_id: exam.created_by,
+                                title: `Proctoring Alert (Delayed): ${t.incident_type}`,
+                                message: `Student (ID: ${studentId.substring(0,8).toUpperCase()}) triggered an offline proctoring alert during ${exam?.title || 'an exam'}.`,
+                                type: 'proctoring'
+                            }));
+                            await supabase.from('notifications').insert(notifs);
+                        }
+                    }
                 }
             } catch (err) {}
         };
@@ -293,9 +306,9 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             }
 
             const incidentPayload = {
-                    deployment_id: exam?.deployment_id, // 👈 Added ?
+                    deployment_id: exam?.deployment_id, 
                     student_id: studentId, 
-                    org_id: exam?.org_id, // 👈 Added ?
+                    org_id: exam?.org_id, 
                     incident_type: type, 
                     description: navigator.onLine ? detail : `${detail} (Logged Offline)`, 
                     severity: 'high'
@@ -306,12 +319,39 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 localStorage.setItem(OFFLINE_THREAT_QUEUE_KEY, JSON.stringify(existingQueue));
                 return; 
             } 
-            await supabase.from('proctoring_logs').insert([incidentPayload]);
+            
+            // 🚀 ADDED ERROR CATCHER FOR DIAGNOSING THE MISSING LOGS
+            const { error: logError } = await supabase.from('proctoring_logs').insert([incidentPayload]);
+            if (logError) console.error("🚨 PROCTORING LOG ERROR:", logError);
+            
+            try {
+                const { data: deploymentData } = await supabase
+                    .from('exam_deployments')
+                    .select('created_by')
+                    .eq('deployment_id', exam?.deployment_id)
+                    .single();
+
+                const facultyId = deploymentData?.created_by;
+
+                if (facultyId) {
+                    await supabase.from('notifications').insert([{
+                        user_id: facultyId,
+                        title: `Proctoring Alert: ${type}`,
+                        message: `Student (ID: ${studentId.substring(0,8).toUpperCase()}) triggered an alert: ${detail}`,
+                        type: 'proctoring'
+                    }]);
+                }
+            } catch (err) {
+                console.error("Could not send notification:", err);
+            }
+
             syncData(); 
         };
 
-        const handleVisibilityChange = () => { if (document.hidden) { logSecurityViolation('visibility_hidden', 'Focus Lost: Tab switched.'); setShowViolationModal(true); } };
-        const handleWindowBlur = () => { logSecurityViolation('window_blur', 'Focus Lost: Interacted with external app.'); setShowViolationModal(true); };
+        // 🚀 APPLE iOS/iPAD OS FIXES
+        const handleVisibilityChange = () => { if (document.hidden) { logSecurityViolation('visibility_hidden', 'Focus Lost: Tab switched or minimized.'); setShowViolationModal(true); } };
+        const handleWindowBlur = () => { logSecurityViolation('window_blur', 'Focus Lost: Interacted with external app or notification.'); setShowViolationModal(true); };
+        const handlePageHide = () => { logSecurityViolation('app_backgrounded', 'Focus Lost: App pushed to background (iPad/iOS).'); setShowViolationModal(true); }; // <-- NEW APPLE CATCHER
         
         let lastWidth = window.innerWidth;
         const handleResize = () => {
@@ -323,6 +363,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         window.addEventListener('online', handleOnlineDelayedFlush);
         document.addEventListener('visibilitychange', handleVisibilityChange);
         window.addEventListener('blur', handleWindowBlur);
+        window.addEventListener('pagehide', handlePageHide); // <-- NEW APPLE CATCHER
         window.addEventListener('resize', handleResize);
         window.addEventListener('beforeunload', handleBeforeUnload);
 
@@ -340,7 +381,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             window.removeEventListener('resize', handleResize); window.removeEventListener('beforeunload', handleBeforeUnload);
             window.removeEventListener('online', handleOnlineDelayedFlush); supabase.removeChannel(channel);
         };
-    }, [exam?.deployment_id, exam?.org_id, studentId, syncData, isHardLocked, isGlobalPaused, LOCAL_BACKUP_KEY]); // 👈 Added ?
+    }, [exam?.deployment_id, exam?.org_id, exam?.created_by, exam?.title, studentId, syncData, isHardLocked, isGlobalPaused, LOCAL_BACKUP_KEY]);
 
     // --- 🚨 WARNING MODAL 15-SECOND ESCALATION ENGINE ---
     useEffect(() => {

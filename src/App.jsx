@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Device } from '@capacitor/device';
 import { PrivacyScreen } from '@capacitor-community/privacy-screen';
+import NotificationsView from './components/views/NotificationsView';
 
 // 🔒 SECURITY PROTOCOL
 import { decryptAES256 } from './utils/security/sqbProtocol';
@@ -363,11 +364,13 @@ function App() {
 
   const refreshData = async () => {
       if (session?.user?.id && profile?.org_id) {
-          await fetchDashboardData(session.user.id, profile.org_id, false);
+          // 🚀 CHANGED TO 'true': This tells the app to refresh silently in the background!
+          await fetchDashboardData(session.user.id, profile.org_id, true);
       }
   };
   
   const userProfileData = { 
+      user_id: session?.user?.id,
       initials: profile?.full_name?.substring(0,2).toUpperCase() || 'ST', 
       name: profile?.full_name || 'Student', 
       regNo: profile?.reg_number || 'N/A',
@@ -384,6 +387,10 @@ function App() {
         onRefresh={refreshData}
     >
        {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData(session.user.id, profile.org_id)} currentUserId={session.user.id} />}
+       
+       {/* 🚀 ADD THIS NEW LINE RIGHT HERE: */}
+       {view === 'notifications' && <NotificationsView profile={profile} />}
+       
        {view === 'exams' && <ExamsView availableExams={dashboardData.availableExams} pastExams={dashboardData.pastExams} onStart={startExam} studentId={session.user.id} onRefresh={() => fetchDashboardData(session.user.id, profile.org_id, true)} />}
        {view === 'profile' && <ProfileView profile={profile} onUpdatePassword={handleUpdatePassword} />}
        {view === 'atlas' && (hasAccess('standard') ? <AtlasView session={session} /> : <PremiumLockedScreen feature="Study Atlas" />)}
