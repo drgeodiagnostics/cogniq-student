@@ -69,45 +69,69 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     const violationsRef = useRef(0);
 
     // --- 🚀 ENGINE: DETERMINISTIC DECRYPTION & SHUFFLE ---
-    // --- 🚀 ENGINE: DETERMINISTIC DECRYPTION & SHUFFLE ---
     const decryptedAndShuffledQuestions = useMemo(() => {
         if (!questions) return [];
-        const masterSeedStr = `${studentId}_${exam?.exam_id}`; // 👈 Added ?
+        const masterSeedStr = `${studentId}_${exam?.exam_id}`; 
         const masterSeedFunc = generateSeed(masterSeedStr);
         const randFunc = mulberry32(masterSeedFunc());
         
         let parsedQs = questions.map(q => {
+            // 🛡️ 1. FAULT-TOLERANT QUESTION DECRYPTION
             let plainText = q.question_text;
-            try { plainText = decryptAES256(q.question_text); } catch (e) {}
+            if (typeof q.question_text === 'object' && q.question_text?.cipher) {
+                try { plainText = decryptAES256(q.question_text.cipher); } catch(e) {}
+            } else if (typeof q.question_text === 'string' && q.question_text.length > 50 && !q.question_text.includes(' ')) {
+                try { plainText = decryptAES256(q.question_text); } catch(e) { plainText = q.question_text; }
+            }
             
+            // 🛡️ 2. FAULT-TOLERANT ANSWER DECRYPTION
             let plainAnswer = q.correct_answer;
-            try { plainAnswer = decryptAES256(q.correct_answer); } catch (e) {}
+            if (typeof q.correct_answer === 'object' && q.correct_answer?.cipher) {
+                 try { plainAnswer = decryptAES256(q.correct_answer.cipher); } catch(e) {}
+            } else if (typeof q.correct_answer === 'string' && q.correct_answer.length > 10) {
+                 try { plainAnswer = decryptAES256(q.correct_answer); } catch(e) { plainAnswer = q.correct_answer; }
+            }
 
-            let plainOptions = q.options;
+            // 🛡️ 3. FAULT-TOLERANT OPTIONS DECRYPTION
+            let plainOptions = [];
             if (q.options?.cipher) {
-                try { plainOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch (e) {}
+                try { plainOptions = JSON.parse(decryptAES256(q.options.cipher)); } catch(e) {}
+            } else if (typeof q.options === 'string') {
+                try { plainOptions = JSON.parse(q.options); } catch(e) {}
+            } else if (Array.isArray(q.options)) {
+                plainOptions = q.options;
             }
 
-            let actualCorrectText = plainAnswer;
-            if (Array.isArray(plainOptions) && /^[A-E]$/i.test(plainAnswer)) {
-                const idx = plainAnswer.toUpperCase().charCodeAt(0) - 65; 
-                if (plainOptions[idx]) actualCorrectText = plainOptions[idx];
+            // 🛡️ 4. MAP A/B/C/D TO ACTUAL TEXT
+            let actualCorrectText = String(plainAnswer || '').trim();
+            if (/^[A-E]$/i.test(actualCorrectText)) {
+                const idx = actualCorrectText.toUpperCase().charCodeAt(0) - 65; 
+                if (plainOptions[idx]) {
+                    actualCorrectText = String(plainOptions[idx]).trim();
+                }
             }
 
+            // 🛡️ 5. SHUFFLE OPTIONS DETERMINISTICALLY
             const qSeedStr = `${studentId}_${q.question_id}`;
             const qRandFunc = mulberry32(generateSeed(qSeedStr)());
 
             let randomizedOptions = plainOptions;
-            if (Array.isArray(plainOptions) && plainOptions.length > 0) {
-                const validOptions = plainOptions.filter(opt => opt && opt.trim() !== '');
+            if (plainOptions.length > 0) {
+                const validOptions = plainOptions.filter(opt => opt && String(opt).trim() !== '');
                 randomizedOptions = shuffleArrayDeterministic(validOptions, qRandFunc);
             }
 
-            return { ...q, question_text: plainText, correct_answer: actualCorrectText, options: randomizedOptions };
+            return { 
+                ...q, 
+                question_text: plainText, 
+                correct_answer: actualCorrectText, 
+                options: randomizedOptions,
+                original_options: plainOptions // Keep original for bulletproof grading
+            };
         });
 
         return shuffleArrayDeterministic(parsedQs, randFunc);
-    }, [questions, exam?.exam_id, studentId]); // 👈 Added ?
+    }, [questions, exam?.exam_id, studentId]); 
 
     // --- 📡 HYBRID DISPATCHER ---
     const syncData = useCallback(async () => {
@@ -184,46 +208,42 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         initRef.current = true;
 
         const initializeSession = async () => {
-    try {
-        const localBackupStr = localStorage.getItem(LOCAL_BACKUP_KEY);
-        let activePayload = localBackupStr ? JSON.parse(localBackupStr) : {};
+            try {
+                const localBackupStr = localStorage.getItem(LOCAL_BACKUP_KEY);
+                let activePayload = localBackupStr ? JSON.parse(localBackupStr) : {};
 
-        // 🚀 FIX: Fetch the 'status' column too
-        const { data } = await supabase
-            .from('exam_submissions')
-            .select('submission_id, answers, is_locked, status') 
-            .eq('exam_id', exam?.exam_id)
-            .eq('student_id', studentId)
-            .limit(1); 
+                const { data } = await supabase
+                    .from('exam_submissions')
+                    .select('submission_id, answers, is_locked, status') 
+                    .eq('exam_id', exam?.exam_id)
+                    .eq('student_id', studentId)
+                    .limit(1); 
 
-        const activeRecord = data && data.length > 0 ? data[0] : null;
+                const activeRecord = data && data.length > 0 ? data[0] : null;
 
-        // 🛑 CRITICAL BYPASS: If the exam is already submitted, force complete it.
-        if (activeRecord && (activeRecord.status === 'published' || activeRecord.status === 'pending')) {
-            console.warn("Exam already submitted. Forcing exit.");
-            // Call onComplete with dummy data so App.jsx handles the redirect
-            onComplete(0, 0, {}); 
-            return; // Stop initialization
-        }
+                if (activeRecord && (activeRecord.status === 'published' || activeRecord.status === 'pending')) {
+                    onComplete(0, 0, {}); 
+                    return; 
+                }
 
-        if (activeRecord) {
-            submissionIdRef.current = activeRecord.submission_id;
-            const cloudPayload = activeRecord.answers || {};
-            if ((cloudPayload.__timeLeft || Infinity) <= (activePayload.__timeLeft || Infinity)) activePayload = cloudPayload; 
-        } else if (navigator.onLine) {
-            const { data: newRow } = await supabase
-            .from('exam_submissions')
-            .insert([{ 
-                exam_id: exam?.exam_id, 
-                student_id: studentId, 
-                org_id: exam?.org_id, 
-                status: 'in_progress', 
-                answers: activePayload 
-            }])
-            .select('submission_id')
-            .single();
-            if (newRow) submissionIdRef.current = newRow.submission_id;
-        }
+                if (activeRecord) {
+                    submissionIdRef.current = activeRecord.submission_id;
+                    const cloudPayload = activeRecord.answers || {};
+                    if ((cloudPayload.__timeLeft || Infinity) <= (activePayload.__timeLeft || Infinity)) activePayload = cloudPayload; 
+                } else if (navigator.onLine) {
+                    const { data: newRow } = await supabase
+                    .from('exam_submissions')
+                    .insert([{ 
+                        exam_id: exam?.exam_id, 
+                        student_id: studentId, 
+                        org_id: exam?.org_id, 
+                        status: 'in_progress', 
+                        answers: activePayload 
+                    }])
+                    .select('submission_id')
+                    .single();
+                    if (newRow) submissionIdRef.current = newRow.submission_id;
+                }
 
                 if (activePayload.__timeLeft) { setTimeLeft(activePayload.__timeLeft); timeRef.current = activePayload.__timeLeft; }
                 if (activePayload.__flagged) { 
@@ -255,7 +275,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             } finally { setLoadingData(false); }
         };
         initializeSession();
-    }, [exam?.exam_id, exam?.org_id, studentId, LOCAL_BACKUP_KEY, decryptedAndShuffledQuestions]); // 👈 Added ?
+    }, [exam?.exam_id, exam?.org_id, studentId, LOCAL_BACKUP_KEY, decryptedAndShuffledQuestions, onComplete]); 
 
 // --- 🛡️ PROCTORING ENGINE & OFFLINE THREAT QUEUE ---
     useEffect(() => {
@@ -274,12 +294,11 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                     if (!error) {
                         localStorage.removeItem(OFFLINE_THREAT_QUEUE_KEY);
                         
-                        // 🚀 NEW: PUSH DELAYED NOTIFICATIONS TO FACULTY BELL
                         if (exam?.created_by) {
                             const notifs = queuedThreats.map(t => ({
                                 user_id: exam.created_by,
                                 title: `Proctoring Alert (Delayed): ${t.incident_type}`,
-                                message: `Student (ID: ${studentId.substring(0,8).toUpperCase()}) triggered an offline proctoring alert during ${exam?.title || 'an exam'}.`,
+                                message: `Student (ID: ${studentId.substring(0,8).toUpperCase()}) triggered an offline proctoring alert.`,
                                 type: 'proctoring'
                             }));
                             await supabase.from('notifications').insert(notifs);
@@ -320,50 +339,86 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 return; 
             } 
             
-            // 🚀 ADDED ERROR CATCHER FOR DIAGNOSING THE MISSING LOGS
             const { error: logError } = await supabase.from('proctoring_logs').insert([incidentPayload]);
             if (logError) console.error("🚨 PROCTORING LOG ERROR:", logError);
             
             try {
-                const { data: deploymentData } = await supabase
-                    .from('exam_deployments')
-                    .select('created_by')
-                    .eq('deployment_id', exam?.deployment_id)
-                    .single();
-
-                const facultyId = deploymentData?.created_by;
-
-                if (facultyId) {
+                const { data: deploymentData } = await supabase.from('exam_deployments').select('created_by').eq('deployment_id', exam?.deployment_id).single();
+                if (deploymentData?.created_by) {
                     await supabase.from('notifications').insert([{
-                        user_id: facultyId,
+                        user_id: deploymentData.created_by,
                         title: `Proctoring Alert: ${type}`,
                         message: `Student (ID: ${studentId.substring(0,8).toUpperCase()}) triggered an alert: ${detail}`,
                         type: 'proctoring'
                     }]);
                 }
-            } catch (err) {
-                console.error("Could not send notification:", err);
-            }
+            } catch (err) {}
 
             syncData(); 
         };
 
-        // 🚀 APPLE iOS/iPAD OS FIXES
-        const handleVisibilityChange = () => { if (document.hidden) { logSecurityViolation('visibility_hidden', 'Focus Lost: Tab switched or minimized.'); setShowViolationModal(true); } };
-        const handleWindowBlur = () => { logSecurityViolation('window_blur', 'Focus Lost: Interacted with external app or notification.'); setShowViolationModal(true); };
-        const handlePageHide = () => { logSecurityViolation('app_backgrounded', 'Focus Lost: App pushed to background (iPad/iOS).'); setShowViolationModal(true); }; // <-- NEW APPLE CATCHER
+        let backgroundTime = null;
+
+        const handleVisibilityChange = () => { 
+            if (document.hidden || document.visibilityState === 'hidden') { 
+                backgroundTime = Date.now();
+                logSecurityViolation('visibility_hidden', 'Focus Lost: App minimized to dock.'); 
+                setShowViolationModal(true); 
+            } else {
+                if (backgroundTime) {
+                    const timeAwaySeconds = (Date.now() - backgroundTime) / 1000;
+                    if (timeAwaySeconds > 10) {
+                        setIsHardLocked(true);
+                        logSecurityViolation('extended_absence', `Student minimized the app for ${Math.round(timeAwaySeconds)} seconds. Exam Auto-Locked.`);
+                        if (submissionIdRef.current && navigator.onLine) supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
+                    }
+                    backgroundTime = null;
+                }
+            }
+        };
+
+        const handleWindowBlur = () => { 
+            logSecurityViolation('window_blur', 'Focus Lost: Interacted with dock or external app.'); 
+            setShowViolationModal(true); 
+            if (!backgroundTime) backgroundTime = Date.now(); 
+        };
+
+        const handleWindowFocus = () => {
+             if (backgroundTime) {
+                const timeAwaySeconds = (Date.now() - backgroundTime) / 1000;
+                if (timeAwaySeconds > 10) {
+                    setIsHardLocked(true);
+                    logSecurityViolation('extended_absence', `Student left the exam window for ${Math.round(timeAwaySeconds)} seconds. Exam Auto-Locked.`);
+                    if (submissionIdRef.current && navigator.onLine) supabase.from('exam_submissions').update({ is_locked: true }).eq('submission_id', submissionIdRef.current);
+                }
+                backgroundTime = null;
+            }
+        };
+
+        const handlePageHide = () => { 
+            logSecurityViolation('app_backgrounded', 'Focus Lost: App pushed to background.'); 
+            setShowViolationModal(true); 
+        };
         
         let lastWidth = window.innerWidth;
+        let lastHeight = window.innerHeight;
         const handleResize = () => {
-            if (window.innerWidth !== lastWidth) { logSecurityViolation('window_resize', 'Window resized: Potential Split View.'); setShowViolationModal(true); lastWidth = window.innerWidth; }
+            if (Math.abs(window.innerWidth - lastWidth) > 20 || Math.abs(window.innerHeight - lastHeight) > 20) { 
+                logSecurityViolation('window_resize', 'Stage Manager or Split View resized.'); 
+                setShowViolationModal(true); 
+                lastWidth = window.innerWidth; 
+                lastHeight = window.innerHeight;
+            }
         };
+
         const handleBeforeUnload = (e) => { syncData(); e.preventDefault(); e.returnValue = ''; return ''; };
         const handleOnlineDelayedFlush = async () => { await new Promise(r => setTimeout(r, 2000)); flushOfflineThreats(); };
 
         window.addEventListener('online', handleOnlineDelayedFlush);
         document.addEventListener('visibilitychange', handleVisibilityChange);
         window.addEventListener('blur', handleWindowBlur);
-        window.addEventListener('pagehide', handlePageHide); // <-- NEW APPLE CATCHER
+        window.addEventListener('focus', handleWindowFocus);
+        window.addEventListener('pagehide', handlePageHide); 
         window.addEventListener('resize', handleResize);
         window.addEventListener('beforeunload', handleBeforeUnload);
 
@@ -377,9 +432,14 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             }).subscribe();
 
         return () => {
-            document.removeEventListener('visibilitychange', handleVisibilityChange); window.removeEventListener('blur', handleWindowBlur);
-            window.removeEventListener('resize', handleResize); window.removeEventListener('beforeunload', handleBeforeUnload);
-            window.removeEventListener('online', handleOnlineDelayedFlush); supabase.removeChannel(channel);
+            document.removeEventListener('visibilitychange', handleVisibilityChange); 
+            window.removeEventListener('blur', handleWindowBlur);
+            window.removeEventListener('focus', handleWindowFocus); 
+            window.removeEventListener('resize', handleResize); 
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('pagehide', handlePageHide);
+            window.removeEventListener('online', handleOnlineDelayedFlush); 
+            supabase.removeChannel(channel);
         };
     }, [exam?.deployment_id, exam?.org_id, exam?.created_by, exam?.title, studentId, syncData, isHardLocked, isGlobalPaused, LOCAL_BACKUP_KEY]);
 
@@ -390,12 +450,8 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             warningTimer = setTimeout(async () => {
                 setIsHardLocked(true); setShowViolationModal(false); 
                 const incidentPayload = { 
-                    deployment_id: exam?.deployment_id, 
-                    student_id: studentId, 
-                    org_id: exam?.org_id,
-                    incident_type: 'warning_timeout', 
-                    description: 'Security Warning ignored for >15s. Exam Auto-Locked.', 
-                    severity: 'high' 
+                    deployment_id: exam?.deployment_id, student_id: studentId, org_id: exam?.org_id,
+                    incident_type: 'warning_timeout', description: 'Security Warning ignored for >15s. Exam Auto-Locked.', severity: 'high' 
                 };
 
                 if (navigator.onLine) {
@@ -421,22 +477,13 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 else if (payload.new.status === 'live' || payload.new.status === 'active') setIsGlobalPaused(false);
             }).subscribe();
 
-        const safetyNet = setInterval(async () => {
-            try {
-                const { data } = await supabase.from('exam_deployments').select('status').eq('deployment_id', exam?.deployment_id).single(); // 👈 Added ?
-                if (data?.status === 'paused' && !isGlobalPaused) { setIsGlobalPaused(true); syncData(); } 
-                else if ((data?.status === 'live' || data?.status === 'active') && isGlobalPaused) setIsGlobalPaused(false);
-            } catch (err) {}
-        }, 10000);
-
-        return () => { supabase.removeChannel(deployChannel); clearInterval(safetyNet); }
+        return () => { supabase.removeChannel(deployChannel); }
     }, [exam?.deployment_id, isGlobalPaused, syncData]);
     
-    // --- 🚀 MANUAL UNLOCK CHECK ---
     const manualUnlockCheck = async () => {
         setIsCheckingUnlock(true);
         try {
-            const { data } = await supabase.from('exam_submissions').select('is_locked').eq('exam_id', exam?.exam_id).eq('student_id', studentId).limit(1); // 👈 Added ?
+            const { data } = await supabase.from('exam_submissions').select('is_locked').eq('exam_id', exam?.exam_id).eq('student_id', studentId).limit(1); 
             if (data && data.length > 0 && data[0].is_locked === false) {
                 setIsHardLocked(false); setShowViolationModal(false); violationsRef.current = 0; setViolationCount(0);
                 try { const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}'); localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: 0 })); } catch(e) {}
@@ -482,10 +529,35 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         setFlagged(next); flaggedRef.current = next; syncData(); 
     };
 
+    // 🚀 THE BULLETPROOF GRADING ENGINE
     const handleFinalSubmit = useCallback(async () => {
         if (!navigator.onLine) { alert("📡 Reconnect to Wi-Fi to submit your final score."); setShowConfirm(false); return; }
         let score = 0;
-        decryptedAndShuffledQuestions.forEach(q => { if (answersRef.current[q.question_id] === q.correct_answer) score++; });
+        
+        decryptedAndShuffledQuestions.forEach(q => {
+            const studentAnswer = String(answersRef.current[q.question_id] || '').trim().toUpperCase();
+            if (!studentAnswer) return;
+
+            const masterKey = String(q.correct_answer || '').trim().toUpperCase();
+
+            // 1. Direct Text Match
+            if (studentAnswer === masterKey) {
+                score++;
+                return;
+            }
+
+            // 2. Cross-Reference Match (Safeguard)
+            const origOpts = q.original_options || [];
+            for (let j = 0; j < origOpts.length; j++) {
+                const label = ['A','B','C','D','E'][j];
+                const optText = String(origOpts[j] || '').trim().toUpperCase();
+                if ((studentAnswer === label || studentAnswer === optText) && (masterKey === label || masterKey === optText)) {
+                    score++;
+                    break;
+                }
+            }
+        });
+
         localStorage.removeItem(LOCAL_BACKUP_KEY);
         onComplete(score, decryptedAndShuffledQuestions.length, answersRef.current);
     }, [decryptedAndShuffledQuestions, onComplete, LOCAL_BACKUP_KEY]);
@@ -500,64 +572,19 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     // 🎨 UI COMPOSITION
     // ==========================================
     return (
-        <div 
-            className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-[#0b0f19] font-sans select-none overflow-hidden text-slate-900 dark:text-slate-100"
-            onContextMenu={(e) => e.preventDefault()} 
-            onCopy={(e) => e.preventDefault()}
-            style={{ WebkitUserSelect: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}
-        >
-            <ExamModals 
-                isGlobalPaused={isGlobalPaused} 
-                isHardLocked={isHardLocked} 
-                showViolationModal={showViolationModal} 
-                showConfirm={showConfirm}
-                studentId={studentId}
-                violationCount={violationCount}
-                isCheckingUnlock={isCheckingUnlock}
-                manualUnlockCheck={manualUnlockCheck}
-                setShowViolationModal={setShowViolationModal}
-                handleFinalSubmit={handleFinalSubmit}
-                setShowConfirm={setShowConfirm}
-            />
-
-            <ExamHeader 
-                examTitle={exam?.title} 
-                violationCount={violationCount} 
-                syncStatus={syncStatus} 
-                timeLeft={timeLeft} 
-                formatTime={formatTime} 
-            />
-
+        <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-[#0b0f19] font-sans select-none overflow-hidden text-slate-900 dark:text-slate-100" onContextMenu={(e) => e.preventDefault()} onCopy={(e) => e.preventDefault()} style={{ WebkitUserSelect: 'none', WebkitTouchCallout: 'none', userSelect: 'none' }}>
+            <ExamModals isGlobalPaused={isGlobalPaused} isHardLocked={isHardLocked} showViolationModal={showViolationModal} showConfirm={showConfirm} studentId={studentId} violationCount={violationCount} isCheckingUnlock={isCheckingUnlock} manualUnlockCheck={manualUnlockCheck} setShowViolationModal={setShowViolationModal} handleFinalSubmit={handleFinalSubmit} setShowConfirm={setShowConfirm} />
+            <ExamHeader examTitle={exam?.title} violationCount={violationCount} syncStatus={syncStatus} timeLeft={timeLeft} formatTime={formatTime} />
             <div className={`flex-1 flex flex-col md:flex-row min-h-0 transition-all duration-500 ${violationCount > 0 ? 'ring-inset ring-4 ring-red-500/5' : ''}`}>
-                <QuestionPanel 
-                    currentQ={currentQ}
-                    currentIdx={currentIdx}
-                    totalQs={decryptedAndShuffledQuestions.length}
-                    answers={answers}
-                    flagged={flagged}
-                    violationCount={violationCount}
-                    handleOptionSelect={handleOptionSelect}
-                    handleClearSelection={handleClearSelection}
-                    toggleFlag={toggleFlag}
-                    setCurrentIdx={setCurrentIdx}
-                    setShowConfirm={setShowConfirm}
-                />
-                
-                <SidebarNavigator 
-                    questions={decryptedAndShuffledQuestions}
-                    currentIdx={currentIdx}
-                    answers={answers}
-                    flagged={flagged}
-                    setCurrentIdx={setCurrentIdx}
-                    setShowConfirm={setShowConfirm}
-                />
+                <QuestionPanel currentQ={currentQ} currentIdx={currentIdx} totalQs={decryptedAndShuffledQuestions.length} answers={answers} flagged={flagged} violationCount={violationCount} handleOptionSelect={handleOptionSelect} handleClearSelection={handleClearSelection} toggleFlag={toggleFlag} setCurrentIdx={setCurrentIdx} setShowConfirm={setShowConfirm} />
+                <SidebarNavigator questions={decryptedAndShuffledQuestions} currentIdx={currentIdx} answers={answers} flagged={flagged} setCurrentIdx={setCurrentIdx} setShowConfirm={setShowConfirm} />
             </div>
         </div>
     );
 }
 
 // ==========================================
-// 🎨 SUB-COMPONENTS (Clean UI Segregation)
+// 🎨 SUB-COMPONENTS
 // ==========================================
 
 const ExamModals = ({ isGlobalPaused, isHardLocked, showViolationModal, showConfirm, studentId, violationCount, isCheckingUnlock, manualUnlockCheck, setShowViolationModal, handleFinalSubmit, setShowConfirm }) => {
@@ -570,10 +597,7 @@ const ExamModals = ({ isGlobalPaused, isHardLocked, showViolationModal, showConf
                             <Pause size={48} className="animate-pulse" />
                         </div>
                         <h2 className="text-3xl font-black text-white uppercase tracking-tight mb-4">Exam Paused</h2>
-                        <p className="text-slate-400 text-sm leading-relaxed mb-8">
-                            Your proctor has temporarily paused this assessment. <br/><br/>
-                            <span className="text-blue-400 font-bold">Your timer has been frozen.</span> Please wait for further instructions.
-                        </p>
+                        <p className="text-slate-400 text-sm leading-relaxed mb-8">Your proctor has temporarily paused this assessment. <br/><br/><span className="text-blue-400 font-bold">Your timer has been frozen.</span> Please wait for further instructions.</p>
                     </div>
                 </div>
             )}
@@ -590,10 +614,7 @@ const ExamModals = ({ isGlobalPaused, isHardLocked, showViolationModal, showConf
                             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-1">ID Ref</span>
                             <span className="text-sm font-mono text-indigo-400">{studentId.substring(0,8).toUpperCase()}</span>
                         </div>
-                        <button 
-                            onClick={manualUnlockCheck} disabled={isCheckingUnlock}
-                            className="w-full flex items-center justify-center gap-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-indigo-600/20 active:scale-95"
-                        >
+                        <button onClick={manualUnlockCheck} disabled={isCheckingUnlock} className="w-full flex items-center justify-center gap-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-indigo-600/20 active:scale-95">
                             {isCheckingUnlock ? <Loader2 className="animate-spin" size={20}/> : <RefreshCw size={20}/>}
                             {isCheckingUnlock ? "VERIFYING STATUS..." : "CHECK UNLOCK STATUS"}
                         </button>
@@ -630,26 +651,17 @@ const ExamModals = ({ isGlobalPaused, isHardLocked, showViolationModal, showConf
 const ExamHeader = ({ examTitle, violationCount, syncStatus, timeLeft, formatTime }) => (
     <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-20 shadow-sm">
         <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
-                <LayoutGrid size={18} />
-            </div>
+            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0"><LayoutGrid size={18} /></div>
             <h1 className="font-bold text-base md:text-lg truncate">{examTitle}</h1>
         </div>
         <div className="flex items-center gap-4">
-            {violationCount > 0 && (
-                <div className="hidden sm:flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-1 rounded-lg text-red-600 dark:text-red-400 animate-pulse">
-                    <ShieldAlert size={14} />
-                    <span className="text-[10px] font-black uppercase">Flags: {violationCount}</span>
-                </div>
-            )}
+            {violationCount > 0 && <div className="hidden sm:flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-1 rounded-lg text-red-600 dark:text-red-400 animate-pulse"><ShieldAlert size={14} /><span className="text-[10px] font-black uppercase">Flags: {violationCount}</span></div>}
             <div className="hidden sm:flex items-center gap-1.5 text-xs font-bold">
                 {syncStatus === 'saving' && <span className="text-slate-400 animate-pulse">Saving...</span>}
                 {syncStatus === 'synced' && <span className="text-green-500 flex items-center gap-1"><Cloud size={14}/> Saved</span>}
                 {syncStatus === 'offline_saved' && <span className="text-amber-500 flex items-center gap-1"><WifiOff size={14}/> Offline</span>}
             </div>
-            <div className={`flex items-center gap-2 font-mono font-bold px-4 py-1.5 rounded-lg border text-sm ${timeLeft < 300 ? 'bg-red-50 text-red-600 animate-pulse border-red-200' : 'bg-slate-100 dark:bg-slate-800 dark:border-slate-700'}`}>
-                <Clock size={16} /> {formatTime(timeLeft)}
-            </div>
+            <div className={`flex items-center gap-2 font-mono font-bold px-4 py-1.5 rounded-lg border text-sm ${timeLeft < 300 ? 'bg-red-50 text-red-600 animate-pulse border-red-200' : 'bg-slate-100 dark:bg-slate-800 dark:border-slate-700'}`}><Clock size={16} /> {formatTime(timeLeft)}</div>
         </div>
     </header>
 );
@@ -661,12 +673,7 @@ const QuestionPanel = ({ currentQ, currentIdx, totalQs, answers, flagged, violat
     return (
         <main className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#0b0f19]">
             <div className="flex-1 overflow-y-auto p-6 md:p-10 w-full mx-auto max-w-4xl">
-                {violationCount > 0 && (
-                    <div className="mb-6 p-3 bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-xl flex items-center gap-3 animate-in slide-in-from-top-2">
-                        <AlertTriangle size={16} className="text-red-500" />
-                        <p className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest">Integrity monitor flagged focus loss. Faculty notified.</p>
-                    </div>
-                )}
+                {violationCount > 0 && <div className="mb-6 p-3 bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-xl flex items-center gap-3 animate-in slide-in-from-top-2"><AlertTriangle size={16} className="text-red-500" /><p className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest">Integrity monitor flagged focus loss. Faculty notified.</p></div>}
                 <div className="flex justify-between items-center mb-8">
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Question {currentIdx + 1} / {totalQs}</span>
                     <div className="flex gap-2">
@@ -682,9 +689,7 @@ const QuestionPanel = ({ currentQ, currentIdx, totalQs, answers, flagged, violat
                         const selected = answers[currentQ.question_id] === opt;
                         return (
                             <div key={i} onClick={() => handleOptionSelect(currentQ.question_id, opt)} className={`w-full p-4 md:p-5 rounded-2xl border-2 cursor-pointer transition-all flex items-center gap-4 group ${selected ? 'border-indigo-600 bg-indigo-50/50 dark:border-indigo-500 dark:bg-indigo-500/10' : 'border-slate-200 dark:border-slate-800 hover:border-indigo-300'}`}>
-                                <div className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 group-hover:border-indigo-400'}`}>
-                                    {selected && <div className="w-2 h-2 bg-white rounded-full" />}
-                                </div>
+                                <div className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${selected ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300 group-hover:border-indigo-400'}`}>{selected && <div className="w-2 h-2 bg-white rounded-full" />}</div>
                                 <span className={`text-sm md:text-base ${selected ? 'font-bold text-indigo-900 dark:text-indigo-100' : 'text-slate-700 dark:text-slate-300'}`}>{opt}</span>
                             </div>
                         );
@@ -695,11 +700,7 @@ const QuestionPanel = ({ currentQ, currentIdx, totalQs, answers, flagged, violat
             <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 p-4">
                 <div className="max-w-4xl mx-auto flex justify-between">
                     <button onClick={() => setCurrentIdx(prev => Math.max(0, prev - 1))} disabled={currentIdx === 0} className="px-6 py-2.5 rounded-xl border font-bold disabled:opacity-30">Previous</button>
-                    {currentIdx === totalQs - 1 ? (
-                        <button onClick={() => setShowConfirm(true)} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-600/20 active:scale-95 transition-all">Submit Exam</button>
-                    ) : (
-                        <button onClick={() => setCurrentIdx(prev => Math.min(totalQs - 1, prev + 1))} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold active:scale-95 transition-all">Next Question</button>
-                    )}
+                    {currentIdx === totalQs - 1 ? <button onClick={() => setShowConfirm(true)} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold shadow-lg shadow-indigo-600/20 active:scale-95 transition-all">Submit Exam</button> : <button onClick={() => setCurrentIdx(prev => Math.min(totalQs - 1, prev + 1))} className="px-8 py-2.5 rounded-xl bg-indigo-600 text-white font-bold active:scale-95 transition-all">Next Question</button>}
                 </div>
             </div>
         </main>
