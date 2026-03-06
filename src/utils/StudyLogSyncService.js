@@ -4,27 +4,43 @@ const LOCAL_QUEUE_KEY = 'atlas_offline_progress_queue';
 
 export const StudyLogSyncService = {
     
-    // 1. Fetch & Merge (Combines Supabase + Offline Local Storage)
+    // 1. Fetch & Merge (Now with Pagination to bypass 1000 row limit!)
     async getReviewedCards(studentId) {
         let mergedSet = new Set();
         
-        // 1. Fetch from Cloud
         try {
-            const { data, error } = await supabase
-                .from('flashcard_progress')
-                .select('card_id')
-                .eq('student_id', studentId);
-            
-            if (error) console.error("🚨 Supabase Error:", error.message);
+            let fetchMore = true;
+            let startIdx = 0;
+            const step = 1000;
+
+            // 🚀 THE FIX: Loop until we get every single log!
+            while (fetchMore) {
+                const { data, error } = await supabase
+                    .from('flashcard_progress')
+                    .select('card_id')
+                    .eq('student_id', studentId)
+                    .range(startIdx, startIdx + step - 1); // Get rows 0-999, then 1000-1999...
                 
-            if (data && data.length > 0) {
-                data.forEach(p => mergedSet.add(String(p.card_id))); 
+                if (error) {
+                    console.error("🚨 Supabase Error:", error.message);
+                    break;
+                }
+                    
+                if (data && data.length > 0) {
+                    data.forEach(p => mergedSet.add(String(p.card_id))); 
+                    startIdx += step;
+                    
+                    // If it brought back less than 1000, we've hit the end of the history!
+                    if (data.length < step) fetchMore = false;
+                } else {
+                    fetchMore = false;
+                }
             }
         } catch (err) {
             console.error("🚨 Network Error:", err);
         }
 
-        // 2. Fetch from Local Offline Queue
+        // 2. Merge local offline queue
         try {
             const localQueueStr = localStorage.getItem(LOCAL_QUEUE_KEY);
             if (localQueueStr) {
@@ -32,21 +48,19 @@ export const StudyLogSyncService = {
                 localQueue.forEach(item => mergedSet.add(String(item.card_id))); 
             }
         } catch (e) {
-            // 🚀 THE FIX: If the local storage is corrupted, nuke it so it stops crashing the app!
-            console.warn("🚨 Corrupted local offline queue detected. Clearing it.");
             localStorage.removeItem(LOCAL_QUEUE_KEY);
         }
 
         return mergedSet;
     },
 
-    // 2. Log a Review (Attempts Cloud -> Falls back to Local)
+    // 2. Log a Review
     async logCardReview(studentId, orgId, card) {
         const payload = {
             student_id: studentId,
             org_id: orgId,
             deck_id: card.chapter || 'Uncategorized',
-            card_id: card.id,
+            card_id: card.id || card.flashcard_id, 
             status: 'reviewed',
             reviewed_at: new Date().toISOString()
         };
@@ -54,21 +68,19 @@ export const StudyLogSyncService = {
         if (navigator.onLine) {
             const { error } = await supabase.from('flashcard_progress').insert([payload]);
             if (!error || error.code === '23505') return true; 
-            console.warn("Supabase blocked log, moving to offline queue:", error);
         }
 
         const queue = JSON.parse(localStorage.getItem(LOCAL_QUEUE_KEY) || '[]');
-        if (!queue.find(q => q.card_id === card.id)) {
+        if (!queue.find(q => q.card_id === payload.card_id)) {
             queue.push(payload);
             localStorage.setItem(LOCAL_QUEUE_KEY, JSON.stringify(queue));
         }
         return false; 
     },
 
-    // 3. Background Sync (Pushes local queue to cloud)
+    // 3. Background Sync
     async syncOfflineLogs() {
         if (!navigator.onLine) return;
-        
         const queueStr = localStorage.getItem(LOCAL_QUEUE_KEY);
         if (!queueStr) return;
 
@@ -80,9 +92,6 @@ export const StudyLogSyncService = {
             
             if (!error || error.code === '23505') {
                 localStorage.removeItem(LOCAL_QUEUE_KEY);
-                console.log("☁️ Offline study logs successfully synced to cloud!");
-            } else {
-                console.error("🚨 Sync engine failed to push logs:", error.message);
             }
         } catch (err) {
             console.error("Sync engine crash:", err);
