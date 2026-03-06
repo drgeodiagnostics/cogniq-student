@@ -8,6 +8,7 @@ export const StudyLogSyncService = {
     async getReviewedCards(studentId) {
         let mergedSet = new Set();
         
+        // 1. Fetch from Cloud
         try {
             const { data, error } = await supabase
                 .from('flashcard_progress')
@@ -17,18 +18,24 @@ export const StudyLogSyncService = {
             if (error) console.error("🚨 Supabase Error:", error.message);
                 
             if (data && data.length > 0) {
-                // 🚀 FIX: Force to String!
                 data.forEach(p => mergedSet.add(String(p.card_id))); 
             }
         } catch (err) {
             console.error("🚨 Network Error:", err);
         }
 
+        // 2. Fetch from Local Offline Queue
         try {
-            const localQueue = JSON.parse(localStorage.getItem(LOCAL_QUEUE_KEY) || '[]');
-            // 🚀 FIX: Force to String!
-            localQueue.forEach(item => mergedSet.add(String(item.card_id))); 
-        } catch (e) {}
+            const localQueueStr = localStorage.getItem(LOCAL_QUEUE_KEY);
+            if (localQueueStr) {
+                const localQueue = JSON.parse(localQueueStr);
+                localQueue.forEach(item => mergedSet.add(String(item.card_id))); 
+            }
+        } catch (e) {
+            // 🚀 THE FIX: If the local storage is corrupted, nuke it so it stops crashing the app!
+            console.warn("🚨 Corrupted local offline queue detected. Clearing it.");
+            localStorage.removeItem(LOCAL_QUEUE_KEY);
+        }
 
         return mergedSet;
     },
