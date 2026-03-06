@@ -2,7 +2,6 @@ import { supabase } from '../supabaseClient';
 
 const LOCAL_QUEUE_KEY = 'atlas_offline_progress_queue';
 
-// 🚀 Notice the 'export const' here. This is what AtlasView is looking for!
 export const StudyLogSyncService = {
     
     // 1. Fetch & Merge (Combines Supabase + Offline Local Storage)
@@ -10,14 +9,21 @@ export const StudyLogSyncService = {
         let mergedSet = new Set();
         
         try {
-            const { data } = await supabase
+            // 🚀 FIXED: We must extract 'error' and check it manually!
+            const { data, error } = await supabase
                 .from('flashcard_progress')
                 .select('card_id')
                 .eq('student_id', studentId);
+            
+            if (error) {
+                console.error("🚨 Supabase Error fetching study logs:", error.message);
+            }
                 
-            if (data) data.forEach(p => mergedSet.add(p.card_id));
+            if (data && data.length > 0) {
+                data.forEach(p => mergedSet.add(p.card_id));
+            }
         } catch (err) {
-            console.error("Could not fetch remote logs:", err);
+            console.error("🚨 Network/Code Error fetching remote logs:", err);
         }
 
         try {
@@ -69,6 +75,8 @@ export const StudyLogSyncService = {
             if (!error || error.code === '23505') {
                 localStorage.removeItem(LOCAL_QUEUE_KEY);
                 console.log("☁️ Offline study logs successfully synced to cloud!");
+            } else {
+                console.error("🚨 Sync engine failed to push logs:", error.message);
             }
         } catch (err) {
             console.error("Sync engine crash:", err);
