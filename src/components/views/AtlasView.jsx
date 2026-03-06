@@ -36,8 +36,10 @@ const AtlasView = ({ session }) => {
         else setIsBackgroundSyncing(true);
         
         try {
-            // 🚀 TRIGGER BACKGROUND SYNC EVERY TIME WE FETCH
-            StudyLogSyncService.syncOfflineLogs();
+            // 🚀 FIX: Force it to wait for the sync to finish before downloading!
+            await StudyLogSyncService.syncOfflineLogs(); 
+
+            // ... (keep the rest of your fetch logic exactly the same)
 
             const { data: userProfile } = await supabase
                 .from('user_master')
@@ -154,11 +156,11 @@ const AtlasView = ({ session }) => {
     const toggleFlip = async (card) => {
         setFlippedCards(prev => ({ ...prev, [card.id]: !prev[card.id] }));
         
-        if (!reviewedCards.has(card.id)) {
-            // Optimistic UI update
-            setReviewedCards(prev => new Set(prev).add(card.id));
-            
-            // 🚀 FIRE AND FORGET USING THE DEDICATED SERVICE
+        // 🚀 FIX: Cast to String
+        const stringId = String(card.id); 
+
+        if (!reviewedCards.has(stringId)) {
+            setReviewedCards(prev => new Set(prev).add(stringId)); 
             StudyLogSyncService.logCardReview(session.user.id, orgId, card);
         }
     };
@@ -301,7 +303,7 @@ const AtlasView = ({ session }) => {
                                                 .sort(([chapA], [chapB]) => chapA.localeCompare(chapB, undefined, { numeric: true, sensitivity: 'base' }))
                                                 .map(([chapterName, cards]) => {
                                                     const folderKey = `${classGroup.id}-${chapterName}`;
-                                                    const reviewedCount = cards.filter(c => reviewedCards.has(c.id)).length;
+                                                    const reviewedCount = cards.filter(c => reviewedCards.has(String(c.id))).length; 
                                                     const totalCount = cards.length;
                                                     const progressPercent = Math.round((reviewedCount / totalCount) * 100);
 
@@ -334,8 +336,9 @@ const AtlasView = ({ session }) => {
                                                             {expandedChapters[folderKey] && (
                                                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-6 border-t border-slate-100 dark:border-slate-800 animate-in slide-in-from-top-2">
                                                                     {cards.map(card => {
-                                                                        const isReviewed = reviewedCards.has(card.id);
-                                                                        const isNew = isNewItem(card.created_at);
+                                                                    // 🚀 FIX: Cast to String
+                                                                    const isReviewed = reviewedCards.has(String(card.id)); 
+                                                                    const isNew = isNewItem(card.created_at);
 
                                                                         return (
                                                                             <div key={card.id} onClick={() => toggleFlip(card)} className="cursor-pointer group perspective-1000 h-64 w-full relative">

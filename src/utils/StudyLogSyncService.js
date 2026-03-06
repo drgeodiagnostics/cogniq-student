@@ -9,26 +9,25 @@ export const StudyLogSyncService = {
         let mergedSet = new Set();
         
         try {
-            // 🚀 FIXED: We must extract 'error' and check it manually!
             const { data, error } = await supabase
                 .from('flashcard_progress')
                 .select('card_id')
                 .eq('student_id', studentId);
             
-            if (error) {
-                console.error("🚨 Supabase Error fetching study logs:", error.message);
-            }
+            if (error) console.error("🚨 Supabase Error:", error.message);
                 
             if (data && data.length > 0) {
-                data.forEach(p => mergedSet.add(p.card_id));
+                // 🚀 FIX: Force to String!
+                data.forEach(p => mergedSet.add(String(p.card_id))); 
             }
         } catch (err) {
-            console.error("🚨 Network/Code Error fetching remote logs:", err);
+            console.error("🚨 Network Error:", err);
         }
 
         try {
             const localQueue = JSON.parse(localStorage.getItem(LOCAL_QUEUE_KEY) || '[]');
-            localQueue.forEach(item => mergedSet.add(item.card_id));
+            // 🚀 FIX: Force to String!
+            localQueue.forEach(item => mergedSet.add(String(item.card_id))); 
         } catch (e) {}
 
         return mergedSet;
