@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Device } from '@capacitor/device';
 import { PrivacyScreen } from '@capacitor-community/privacy-screen';
-import NotificationsView from './components/views/NotificationsView';
 
 // 🔒 SECURITY PROTOCOL
 import { decryptAES256 } from './utils/security/sqbProtocol';
@@ -16,9 +15,12 @@ import DeviceGuard from './components/auth/DeviceGuard';
 import DashboardView from './components/views/DashboardView';
 import ExamsView from './components/views/ExamsView';
 import ActiveExamInterface from './components/views/ActiveExamInterface';
+import EpaStudentTracker from './components/views/EpaStudentTracker';
 import AtlasView from './components/views/AtlasView';
 import MentorshipView from './components/views/MentorshipView';
 import ProfileView from './components/views/ProfileView';
+import NotificationsView from './components/views/NotificationsView';
+import FeedbackView from './components/views/FeedbackView';
 
 // ⚠️ TEMPORARY OVERRIDE: Web Mode Active
 const STRICT_DEVICE_MODE = false; 
@@ -271,7 +273,7 @@ function App() {
 
           if (error) throw new Error("RLS Block: " + error.message);
           
-          // 🚀 STEP 1: DECRYPT FIRST (So we can actually see the arrays to shuffle them)
+          // 🚀 STEP 1: DECRYPT ONLY. DO NOT SHUFFLE HERE.
           let processedQuestions = (qData || []).map(q => {
               let parsedOptions = q.options;
               if (q.options?.cipher) {
@@ -283,39 +285,26 @@ function App() {
               let plainText = q.question_text;
               if (typeof q.question_text === 'object' && q.question_text?.cipher) {
                   try { plainText = decryptAES256(q.question_text.cipher); } catch(e) {}
+              } else if (typeof q.question_text === 'string' && q.question_text.length > 50 && !q.question_text.includes(' ')) {
+                  try { plainText = decryptAES256(q.question_text); } catch(e) { plainText = q.question_text; }
+              }
+
+              let plainAnswer = q.correct_answer;
+              if (typeof q.correct_answer === 'object' && q.correct_answer?.cipher) {
+                   try { plainAnswer = decryptAES256(q.correct_answer.cipher); } catch(e) {}
+              } else if (typeof q.correct_answer === 'string' && q.correct_answer.length > 10) {
+                   try { plainAnswer = decryptAES256(q.correct_answer); } catch(e) { plainAnswer = q.correct_answer; }
               }
 
               return {
                   ...q,
                   question_text: plainText,
-                  options: parsedOptions
+                  options: parsedOptions,
+                  correct_answer: plainAnswer
               };
           });
 
-          // Helper: Fisher-Yates Array Shuffle
-          const shuffleArray = (array) => {
-              const copy = [...array];
-              for (let i = copy.length - 1; i > 0; i--) {
-                  const j = Math.floor(Math.random() * (i + 1));
-                  [copy[i], copy[j]] = [copy[j], copy[i]];
-              }
-              return copy;
-          };
-
-          // 🚀 STEP 2: SHUFFLE THE DECRYPTED OPTIONS
-          if (deployment.shuffle_options) {
-              processedQuestions = processedQuestions.map(q => {
-                  if (q.options && Array.isArray(q.options)) {
-                      return { ...q, options: shuffleArray(q.options) };
-                  }
-                  return q;
-              });
-          }
-
-          // 🚀 STEP 3: SHUFFLE THE QUESTIONS
-          if (deployment.shuffle_questions) {
-              processedQuestions = shuffleArray(processedQuestions);
-          }
+          // 🚨 CRITICAL FIX: Shuffling removed from here to preserve the Grading Index!
           
           setCurrentExam({ 
               ...deployment.exam, 
@@ -442,8 +431,10 @@ function App() {
        {view === 'dashboard' && <DashboardView data={dashboardData} refresh={() => fetchDashboardData(session.user.id, profile.org_id)} currentUserId={session.user.id} />}
        {view === 'notifications' && <NotificationsView profile={profile} />}
        {view === 'exams' && <ExamsView availableExams={dashboardData.availableExams} pastExams={dashboardData.pastExams} onStart={startExam} studentId={session.user.id} onRefresh={() => fetchDashboardData(session.user.id, profile.org_id, true)} />}
+       {view === 'epa_tracker' && <EpaStudentTracker profile={profile} />}
        {view === 'profile' && <ProfileView profile={profile} onUpdatePassword={handleUpdatePassword} />}
        {view === 'atlas' && (hasAccess('standard') ? <AtlasView session={session} /> : <PremiumLockedScreen feature="Study Atlas" />)}
+       {view === 'feedback' && <FeedbackView profile={profile} />}
        {view === 'mentorship' && (hasAccess('enterprise') ? <MentorshipView mentor={dashboardData.myMentor} /> : <PremiumLockedScreen feature="Mentorship" />)}
     </StudentDashboardLayout>
   );

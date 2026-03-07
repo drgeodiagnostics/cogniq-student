@@ -102,16 +102,10 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 plainOptions = q.options;
             }
 
-            // 🛡️ 4. MAP A/B/C/D TO ACTUAL TEXT
-            let actualCorrectText = String(plainAnswer || '').trim();
-            if (/^[A-E]$/i.test(actualCorrectText)) {
-                const idx = actualCorrectText.toUpperCase().charCodeAt(0) - 65; 
-                if (plainOptions[idx]) {
-                    actualCorrectText = String(plainOptions[idx]).trim();
-                }
-            }
+            // 🚨 ARCHITECTURAL FIX: Removed the data mutation block here. 
+            // We preserve the true, unadulterated database answer for grading.
 
-            // 🛡️ 5. SHUFFLE OPTIONS DETERMINISTICALLY
+            // 🛡️ 4. SHUFFLE OPTIONS DETERMINISTICALLY
             const qSeedStr = `${studentId}_${q.question_id}`;
             const qRandFunc = mulberry32(generateSeed(qSeedStr)());
 
@@ -124,9 +118,10 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
             return { 
                 ...q, 
                 question_text: plainText, 
-                correct_answer: actualCorrectText, 
+                correct_answer: plainAnswer,      // 🛡️ Unmutated DB key
+                raw_db_answer: plainAnswer,       // 🛡️ Failsafe reference
                 options: randomizedOptions,
-                original_options: plainOptions // Keep original for bulletproof grading
+                original_options: plainOptions    // 🛡️ Crucial for the Regrade loop
             };
         });
 
@@ -214,7 +209,7 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
 
                 const { data } = await supabase
                     .from('exam_submissions')
-                    .select('submission_id, answers, is_locked, status') 
+                    .select('submission_id, answers, is_locked, status, session_status')
                     .eq('exam_id', exam?.exam_id)
                     .eq('student_id', studentId)
                     .limit(1); 
@@ -227,6 +222,9 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
                 }
 
                 if (activeRecord) {
+                    if (activeRecord.session_status === 'paused') {
+                        setIsGlobalPaused(true);
+                    }
                     submissionIdRef.current = activeRecord.submission_id;
                     const cloudPayload = activeRecord.answers || {};
                     if ((cloudPayload.__timeLeft || Infinity) <= (activePayload.__timeLeft || Infinity)) activePayload = cloudPayload; 
@@ -422,13 +420,22 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         window.addEventListener('resize', handleResize);
         window.addEventListener('beforeunload', handleBeforeUnload);
 
-        const channel = supabase.channel(`lock-status-${studentId}`)
+        const channel = supabase.channel(`student-status-${studentId}`)
             .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'exam_submissions', filter: `student_id=eq.${studentId}` }, 
             (payload) => {
                 if (payload.new.is_locked === false) {
                     setIsHardLocked(false); setShowViolationModal(false); violationsRef.current = 0; setViolationCount(0);
                     try { const currentPayload = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}'); localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({ ...currentPayload, __violations: 0 })); } catch(e) {}
-                } else if (payload.new.is_locked === true) setIsHardLocked(true);
+                } else if (payload.new.is_locked === true) {
+                    setIsHardLocked(true);
+                }
+
+                if (payload.new.session_status === 'paused') {
+                    setIsGlobalPaused(true); 
+                    syncData();
+                } else if (payload.new.session_status === 'in_progress') {
+                    setIsGlobalPaused(false);
+                }
             }).subscribe();
 
         return () => {
@@ -529,32 +536,52 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
         setFlagged(next); flaggedRef.current = next; syncData(); 
     };
 
-    // 🚀 THE BULLETPROOF GRADING ENGINE
+    // 🚀 THE GOD-MODE GRADING ENGINE
     const handleFinalSubmit = useCallback(async () => {
         if (!navigator.onLine) { alert("📡 Reconnect to Wi-Fi to submit your final score."); setShowConfirm(false); return; }
         let score = 0;
         
         decryptedAndShuffledQuestions.forEach(q => {
-            const studentAnswer = String(answersRef.current[q.question_id] || '').trim().toUpperCase();
-            if (!studentAnswer) return;
+            const rawStudentAns = answersRef.current[q.question_id];
+            if (!rawStudentAns) return;
 
-            const masterKey = String(q.correct_answer || '').trim().toUpperCase();
+            const sAns = String(rawStudentAns).trim().toUpperCase();
+            const cAns = String(q.raw_db_answer || q.correct_answer || '').trim().toUpperCase();
 
             // 1. Direct Text Match
-            if (studentAnswer === masterKey) {
-                score++;
-                return;
-            }
+            if (sAns === cAns) { score++; return; }
 
-            // 2. Cross-Reference Match (Safeguard)
-            const origOpts = q.original_options || [];
-            for (let j = 0; j < origOpts.length; j++) {
+            // 2. Aggressive Alphanumeric Match (Strips HTML, spaces, quotes)
+            const strip = (s) => s.replace(/[^A-Z0-9]/g, '');
+            const strippedS = strip(sAns);
+            const strippedC = strip(cAns);
+            if (strippedS === strippedC && strippedC.length > 0) { score++; return; }
+
+            // 3. Faculty Regrade Cross-Reference Match
+            const dOpts = (q.original_options && Array.isArray(q.original_options)) ? q.original_options : 
+                         ((q.options && Array.isArray(q.options)) ? q.options : []);
+            
+            let matched = false;
+            for (let j = 0; j < dOpts.length; j++) {
                 const label = ['A','B','C','D','E'][j];
-                const optText = String(origOpts[j] || '').trim().toUpperCase();
-                if ((studentAnswer === label || studentAnswer === optText) && (masterKey === label || masterKey === optText)) {
-                    score++;
-                    break;
+                const optText = String(dOpts[j] || '').trim().toUpperCase();
+                const strippedOpt = strip(optText);
+                
+                // Standard Faculty Check
+                if ((sAns === label || sAns === optText) && (cAns === label || cAns === optText)) {
+                    score++; matched = true; break;
                 }
+                
+                // Aggressive Faculty Check
+                if ((strippedS === label || strippedS === strippedOpt) && (strippedC === label || strippedC === strippedOpt)) {
+                    score++; matched = true; break;
+                }
+            }
+            if (matched) return;
+            
+            // 4. Substring Failsafe
+            if (cAns.length > 4 && sAns.length > 4) {
+                if (cAns.includes(sAns) || sAns.includes(cAns)) { score++; }
             }
         });
 
@@ -563,6 +590,37 @@ export default function ActiveExamInterface({ exam, questions, studentId, isPWA,
     }, [decryptedAndShuffledQuestions, onComplete, LOCAL_BACKUP_KEY]);
 
     useEffect(() => { if (timeLeft === 0 && !loadingData) handleFinalSubmit(); }, [timeLeft, loadingData, handleFinalSubmit]);
+
+    // 🚀 📡 FAILSAFE STATUS POLLING (Bypasses Firewall WebSocket Drops)
+    useEffect(() => {
+        if (!submissionIdRef.current) return;
+        
+        const pollSecurityStatus = async () => {
+            if (!navigator.onLine) return;
+            try {
+                const { data } = await supabase
+                    .from('exam_submissions')
+                    .select('is_locked, session_status')
+                    .eq('submission_id', submissionIdRef.current)
+                    .single();
+                    
+                if (data) {
+                    if (data.is_locked && !isHardLocked) setIsHardLocked(true);
+                    if (!data.is_locked && isHardLocked) {
+                         setIsHardLocked(false);
+                         setShowViolationModal(false);
+                         setViolationCount(0);
+                    }
+                    if (data.session_status === 'paused' && !isGlobalPaused) setIsGlobalPaused(true); 
+                    else if (data.session_status === 'in_progress' && isGlobalPaused) setIsGlobalPaused(false);
+                }
+            } catch (err) {}
+        };
+
+        const interval = setInterval(pollSecurityStatus, 4000); 
+        return () => clearInterval(interval);
+    }, [isHardLocked, isGlobalPaused]);
+
 
     if (loadingData) return <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-900"><Loader2 size={32} className="animate-spin text-indigo-500 mb-4" /><p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Securing Session...</p></div>;
 

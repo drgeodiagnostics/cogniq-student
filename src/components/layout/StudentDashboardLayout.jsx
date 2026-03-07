@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
     LayoutDashboard, BookOpen, Layers, Users, User, 
-    LogOut, Menu, X, ShieldCheck, Ban, RefreshCw, Bell 
+    LogOut, Menu, X, ShieldCheck, Ban, RefreshCw, Bell, MessageSquare, Target 
 } from 'lucide-react';
 
 import NotificationBell from './NotificationBell';
@@ -16,9 +16,11 @@ const SideDrawer = ({ isOpen, onClose, userProfile, onSignOut, onNavigate, activ
   const navItems = [
       { id: 'dashboard', icon: LayoutDashboard, label: 'Overview' },
       { id: 'exams', icon: BookOpen, label: 'Assessments' },
+      { id: 'epa_tracker', icon: Target, label: 'EPA Competency' },
       { id: 'atlas', icon: Layers, label: 'Study Atlas' },
       { id: 'mentorship', icon: Users, label: 'Mentorship' },
       { id: 'notifications', icon: Bell, label: 'Notifications' },
+      { id: 'feedback', icon: MessageSquare, label: 'Feedback' }, // 🚀 ADDED FEEDBACK TAB HERE
   ];
 
   return (
@@ -114,12 +116,15 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
         setTimeout(() => setIsSyncing(false), 800); 
     };
 
-    // View Title Mapping for the Header
+    // 🚀 ADDED TITLE MAPPING FOR THE HEADER
     const viewTitles = {
         'dashboard': 'Overview',
         'exams': 'Assessments',
+        'epa_tracker': 'Clinical EPA Portfolio',
         'atlas': 'Study Atlas',
         'mentorship': 'Mentorship',
+        'notifications': 'Notifications',
+        'feedback': 'Module Feedback', // 👈 New Title
         'profile': 'My Profile'
     };
     const headerTitle = viewTitles[currentView] || 'Student Portal';
@@ -192,7 +197,7 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
 
                     {/* DYNAMIC NOTIFICATION BELL */}
                     <div className="shrink-0 mr-1 md:mr-2">
-                        <NotificationBell userId={userProfile?.user_id} onNavigate={onNavigate} /> {/* 👈 Added onNavigate here */}
+                        <NotificationBell userId={userProfile?.user_id} onNavigate={onNavigate} /> 
                     </div>
 
                     {/* PROFILE BUTTON (Hidden text on small mobile) */}
@@ -204,7 +209,7 @@ export default function StudentDashboardLayout({ userProfile, onSignOut, onNavig
                             {userProfile?.initials || 'ST'}
                         </div>
                         <span className="text-sm font-bold hidden sm:block text-slate-700 dark:text-slate-200">
-                            {userProfile?.name?.split(' ')[0]} {/* First name only for clean header */}
+                            {userProfile?.name?.split(' ')[0]} 
                         </span>
                     </button>
                 </div>
